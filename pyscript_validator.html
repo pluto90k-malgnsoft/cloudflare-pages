@@ -236,8 +236,8 @@
             const uint8 = new Uint8Array(arrayBuffer);
             console.log("Segment Header (first 10 bytes):", uint8.slice(0, 10));
             const isTs = uint8[0] === 0x47;
-            let firstPts = null;
-            let lastPts = null;
+            let firstPts = null, lastPts = null;
+            let firstDts = null, lastDts = null;
             let foundStreamTypes = new Set();
  
             if (isTs) {
@@ -246,33 +246,40 @@
                 packetStream.pipe(parseStream);
                 parseStream.on('data', (data) => {
                     if (data.type === 'pes') {
-                        foundStreamTypes.add(data.streamType);
-                        // 0x1b: H.264, 0x24: H.265, 0x0f: ADTS AAC, 0x03/0x04: MP3
+                        if (data.streamType !== undefined) foundStreamTypes.add(data.streamType);
                         const isMediaStream = [0x1b, 0x24, 0x0f, 0x03, 0x04, 0x81, 0x82, 0x86].includes(data.streamType);
                         
-                        if (isMediaStream && typeof data.pts === 'number' && !isNaN(data.pts)) {
-                            const ptsSeconds = data.pts / 90000;
-                            if (firstPts === null) firstPts = ptsSeconds;
-                            lastPts = ptsSeconds;
+                        if (isMediaStream) {
+                            if (typeof data.pts === 'number' && !isNaN(data.pts)) {
+                                const ptsSeconds = data.pts / 90000;
+                                if (firstPts === null) firstPts = ptsSeconds;
+                                lastPts = ptsSeconds;
+                            }
+                            if (typeof data.dts === 'number' && !isNaN(data.dts)) {
+                                const dtsSeconds = data.dts / 90000;
+                                if (firstDts === null) firstDts = dtsSeconds;
+                                lastDts = dtsSeconds;
+                            }
                         }
                     }
                 });
                 packetStream.push(uint8);
                 packetStream.flush();
-                console.log("TS Stream Types Found:", Array.from(foundStreamTypes).map(t => '0x' + t.toString(16)));
+                console.log("TS Stream Types Found:", Array.from(foundStreamTypes).filter(t => t !== undefined).map(t => '0x' + t.toString(16)));
             } else {
                 try {
-                    const firstDts = muxjs.mp4.Probe.findFirstDts(uint8);
-                    if (typeof firstDts === 'number' && firstDts !== -1 && !isNaN(firstDts)) {
-                        firstPts = firstDts / 90000;
+                    const dts = muxjs.mp4.Probe.findFirstDts(uint8);
+                    if (typeof dts === 'number' && dts !== -1 && !isNaN(dts)) {
+                        firstDts = dts / 90000;
+                        firstPts = firstDts; 
                     }
                 } catch(e) {
                     console.error("fMP4 Probe Error:", e);
                 }
             }
             
-            console.log("Final Extracted PTS:", { first: firstPts, last: lastPts });
-            resolve({ first: firstPts, last: lastPts });
+            console.log("Final Extracted Timestamps:", { pts: {first: firstPts, last: lastPts}, dts: {first: firstDts, last: lastDts} });
+            resolve({ pts: {first: firstPts, last: lastPts}, dts: {first: firstDts, last: lastDts} });
         });
     };
 
@@ -380,7 +387,7 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
     if any(seg.key for seg in segments):
         log("[!] 암호화된(AES-128 등) 세그먼트가 감지되었습니다. 현재 분석기는 암호화 해제를 지원하지 않아 결과가 부정확할 수 있습니다.", "warning")
 
-    last_pts_end = None
+    last_dts_end = None
     for i in range(count):
         document.getElementById("status-text").innerText = f"분석 중 ({i+1}/{count})"
         seg = segments[i]
@@ -389,22 +396,30 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
         try:
             r = await fetch_with_proxy(seg.absolute_uri, proxy_prefix)
             data = await r.bytes()
-            ts = await window.parseSegmentTimestamps(Uint8Array.new(data).buffer)
+            ts_info = await window.parseSegmentTimestamps(Uint8Array.new(data).buffer)
             
-            p_start, p_end = ts.first, ts.last
-            if p_start is None:
-                log("  [!] PTS 데이터 없음", "warning")
+            # ts_info: { pts: {first, last}, dts: {first, last} }
+            d_start = ts_info.dts.first
+            d_end = ts_info.dts.last
+            p_start = ts_info.pts.first
+
+            # DTS를 우선으로 하되, DTS가 없으면 PTS 사용
+            main_start = d_start if d_start is not None else p_start
+            
+            if main_start is None:
+                log("  [!] DTS/PTS 데이터 없음", "warning")
                 continue
                 
-            log(f"  PTS: {p_start:.3f} ~ {p_end if p_end else '?'}", "info")
-            if last_pts_end is not None:
-                diff = p_start - last_pts_end
+            log(f"  DTS: {d_start if d_start is not None else 'N/A'} | PTS: {p_start if p_start is not None else 'N/A'}", "info")
+            if last_dts_end is not None:
+                diff = main_start - last_dts_end
                 if abs(diff) > 0.1:
                     log(f"  🚨 {'Gap' if diff > 0 else 'Overlap'}: {diff:.3f}s", "error")
                 else:
                     log(f"  ✅ 연속성 정상 ({diff:.3f}s)", "success")
             
-            last_pts_end = p_end
+            # 다음 분석을 위해 현재 세그먼트의 끝 시간 저장 (DTS 우선)
+            last_dts_end = d_end if d_end is not None else ts_info.pts.last
             window.updateProgress(int((i+1)/count * 100))
         except Exception as e:
             log(f"  [!] 세그먼트 오류: {e}", "error")
