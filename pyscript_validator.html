@@ -246,26 +246,30 @@
                 packetStream.pipe(parseStream);
                 parseStream.on('data', (data) => {
                     if (data.type === 'pes') {
-                        if (data.streamType !== undefined) foundStreamTypes.add(data.streamType);
-                        const isMediaStream = [0x1b, 0x24, 0x0f, 0x03, 0x04, 0x81, 0x82, 0x86].includes(data.streamType);
+                        if (data.streamType !== undefined) {
+                            foundStreamTypes.add(data.streamType);
+                        }
                         
-                        if (isMediaStream) {
-                            if (typeof data.pts === 'number' && !isNaN(data.pts)) {
-                                const ptsSeconds = data.pts / 90000;
-                                if (firstPts === null) firstPts = ptsSeconds;
-                                lastPts = ptsSeconds;
-                            }
-                            if (typeof data.dts === 'number' && !isNaN(data.dts)) {
-                                const dtsSeconds = data.dts / 90000;
-                                if (firstDts === null) firstDts = dtsSeconds;
-                                lastDts = dtsSeconds;
-                            }
+                        // Fallback: PES always has PTS if it has timestamps, DTS is optional (defaults to PTS)
+                        let rawPts = data.pts;
+                        let rawDts = data.dts !== undefined ? data.dts : rawPts;
+
+                        if (typeof rawPts === 'number' && !isNaN(rawPts)) {
+                            const ptsSeconds = rawPts / 90000;
+                            if (firstPts === null || ptsSeconds < firstPts) firstPts = ptsSeconds;
+                            if (lastPts === null || ptsSeconds > lastPts) lastPts = ptsSeconds;
+                        }
+
+                        if (typeof rawDts === 'number' && !isNaN(rawDts)) {
+                            const dtsSeconds = rawDts / 90000;
+                            if (firstDts === null || dtsSeconds < firstDts) firstDts = dtsSeconds;
+                            if (lastDts === null || dtsSeconds > lastDts) lastDts = dtsSeconds;
                         }
                     }
                 });
                 packetStream.push(uint8);
                 packetStream.flush();
-                console.log("TS Stream Types Found:", Array.from(foundStreamTypes).filter(t => t !== undefined).map(t => '0x' + t.toString(16)));
+                console.log("TS Stream Types:", Array.from(foundStreamTypes).map(t => '0x' + t.toString(16)));
             } else {
                 try {
                     const dts = muxjs.mp4.Probe.findFirstDts(uint8);
