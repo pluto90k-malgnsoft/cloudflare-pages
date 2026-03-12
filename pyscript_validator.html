@@ -239,37 +239,81 @@
             let firstPts = null, lastPts = null;
             let firstDts = null, lastDts = null;
             let foundStreamTypes = new Set();
- 
             if (isTs) {
-                const packetStream = new muxjs.mp2t.TransportPacketStream();
-                const parseStream = new muxjs.mp2t.TransportParseStream();
-                packetStream.pipe(parseStream);
-                parseStream.on('data', (data) => {
-                    if (data.type === 'pes') {
-                        if (data.streamType !== undefined) {
-                            foundStreamTypes.add(data.streamType);
+                let scrambledCount = 0;
+                
+                // 수동 TS 패킷 파싱 (188 bytes 단위)
+                for (let i = 0; i < uint8.length - 188; i++) {
+                    // Sync byte 확인
+                    if (uint8[i] === 0x47) {
+                        const pusi = (uint8[i + 1] & 0x40) !== 0; // Payload Unit Start Indicator
+                        // 비디오/오디오 스트림 식별은 PMT가 필요하므로 일단 PES 시작 패킷을 모두 봅니다.
+                        const scramblingControl = (uint8[i + 3] >> 6) & 0x03;
+                        
+                        if (scramblingControl !== 0) {
+                            scrambledCount++;
                         }
                         
-                        // Fallback: PES always has PTS if it has timestamps, DTS is optional (defaults to PTS)
-                        let rawPts = data.pts;
-                        let rawDts = data.dts !== undefined ? data.dts : rawPts;
-
-                        if (typeof rawPts === 'number' && !isNaN(rawPts)) {
-                            const ptsSeconds = rawPts / 90000;
-                            if (firstPts === null || ptsSeconds < firstPts) firstPts = ptsSeconds;
-                            if (lastPts === null || ptsSeconds > lastPts) lastPts = ptsSeconds;
+                        if (pusi && scramblingControl === 0) {
+                            const adaptationFieldControl = (uint8[i + 3] >> 4) & 0x03;
+                            let payloadOffset = i + 4;
+                            
+                            // Adaptation Field 존재 여부 처리 (0x02, 0x03)
+                            if (adaptationFieldControl === 2 || adaptationFieldControl === 3) {
+                                const adaptationLength = uint8[payloadOffset];
+                                payloadOffset += 1 + adaptationLength;
+                            }
+                            
+                            if (payloadOffset < i + 188 - 6) { // PES 헤더 최소 공간
+                                // PES 헤더 시작 코드 확인 (0x00 00 01)
+                                if (uint8[payloadOffset] === 0x00 && uint8[payloadOffset + 1] === 0x00 && uint8[payloadOffset + 2] === 0x01) {
+                                    const streamId = uint8[payloadOffset + 3];
+                                    // 비디오(0xE0~0xEF) 또는 오디오(0xC0~0xDF)
+                                    if ((streamId >= 0xE0 && streamId <= 0xEF) || (streamId >= 0xC0 && streamId <= 0xDF)) {
+                                        foundStreamTypes.add(streamId);
+                                        const ptsDtsIndicator = (uint8[payloadOffset + 7] >> 6) & 0x03;
+                                        
+                                        if (ptsDtsIndicator === 2 || ptsDtsIndicator === 3) {
+                                            // 비트 연산 시 32bit signed 이슈 방지를 위해 곱셈 사용
+                                            let pts = ((uint8[payloadOffset + 9] & 0x0E) * 536870912) +
+                                                      ((uint8[payloadOffset + 10] & 0xFF) * 2097152) +
+                                                      ((uint8[payloadOffset + 11] & 0xFE) * 16384) +
+                                                      ((uint8[payloadOffset + 12] & 0xFF) * 128) +
+                                                      ((uint8[payloadOffset + 13] & 0xFE) / 2);
+                                            
+                                            const ptsSeconds = pts / 90000;
+                                            if (firstPts === null || ptsSeconds < firstPts) firstPts = ptsSeconds;
+                                            if (lastPts === null || ptsSeconds > lastPts) lastPts = ptsSeconds;
+                                            
+                                            if (ptsDtsIndicator === 3) {
+                                                let dts = ((uint8[payloadOffset + 14] & 0x0E) * 536870912) +
+                                                          ((uint8[payloadOffset + 15] & 0xFF) * 2097152) +
+                                                          ((uint8[payloadOffset + 16] & 0xFE) * 16384) +
+                                                          ((uint8[payloadOffset + 17] & 0xFF) * 128) +
+                                                          ((uint8[payloadOffset + 18] & 0xFE) / 2);
+                                                const dtsSeconds = dts / 90000;
+                                                if (firstDts === null || dtsSeconds < firstDts) firstDts = dtsSeconds;
+                                                if (lastDts === null || dtsSeconds > lastDts) lastDts = dtsSeconds;
+                                            } else {
+                                                if (firstDts === null || ptsSeconds < firstDts) firstDts = ptsSeconds;
+                                                if (lastDts === null || ptsSeconds > lastDts) lastDts = ptsSeconds;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
-
-                        if (typeof rawDts === 'number' && !isNaN(rawDts)) {
-                            const dtsSeconds = rawDts / 90000;
-                            if (firstDts === null || dtsSeconds < firstDts) firstDts = dtsSeconds;
-                            if (lastDts === null || dtsSeconds > lastDts) lastDts = dtsSeconds;
-                        }
+                        
+                        i += 187; // TS 패킷은 188바이트 고정
                     }
-                });
-                packetStream.push(uint8);
-                packetStream.flush();
-                console.log("TS Stream Types:", Array.from(foundStreamTypes).map(t => '0x' + t.toString(16)));
+                }
+                
+                if (scrambledCount > 0) {
+                    console.warn(`[!] AES-128 암호화 패킷 발견(${scrambledCount}개) - PTS를 직접 읽을 수 없습니다.`);
+                    window.addLog(`[!] 패킷 암호화 블록 감지! 타임스탬프 추출 불가. (복호화 키 필요)`, "error");
+                }
+                console.log(`Manual TS Parsing -> Scrambled: ${scrambledCount}, Found PES streams:`, Array.from(foundStreamTypes).map(t => '0x' + t.toString(16)));
+
             } else {
                 try {
                     const dts = muxjs.mp4.Probe.findFirstDts(uint8);
