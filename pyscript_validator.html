@@ -238,30 +238,40 @@
             const isTs = uint8[0] === 0x47;
             let firstPts = null;
             let lastPts = null;
+            let foundStreamTypes = new Set();
  
             if (isTs) {
                 const packetStream = new muxjs.mp2t.TransportPacketStream();
                 const parseStream = new muxjs.mp2t.TransportParseStream();
                 packetStream.pipe(parseStream);
                 parseStream.on('data', (data) => {
-                    if (data.type === 'pes' && (data.streamType === 0x1b || data.streamType === 0x24)) {
-                        const ptsSeconds = data.pts / 90000;
-                        if (firstPts === null) firstPts = ptsSeconds;
-                        lastPts = ptsSeconds;
+                    if (data.type === 'pes') {
+                        foundStreamTypes.add(data.streamType);
+                        // 0x1b: H.264, 0x24: H.265, 0x0f: ADTS AAC, 0x03/0x04: MP3
+                        const isMediaStream = [0x1b, 0x24, 0x0f, 0x03, 0x04, 0x81, 0x82, 0x86].includes(data.streamType);
+                        
+                        if (isMediaStream && typeof data.pts === 'number' && !isNaN(data.pts)) {
+                            const ptsSeconds = data.pts / 90000;
+                            if (firstPts === null) firstPts = ptsSeconds;
+                            lastPts = ptsSeconds;
+                        }
                     }
                 });
                 packetStream.push(uint8);
                 packetStream.flush();
+                console.log("TS Stream Types Found:", Array.from(foundStreamTypes).map(t => '0x' + t.toString(16)));
             } else {
                 try {
                     const firstDts = muxjs.mp4.Probe.findFirstDts(uint8);
-                    console.log("fMP4 Probe Result (firstDts):", firstDts);
-                    if (firstDts !== -1 && firstDts !== null) firstPts = firstDts / 90000;
+                    if (typeof firstDts === 'number' && firstDts !== -1 && !isNaN(firstDts)) {
+                        firstPts = firstDts / 90000;
+                    }
                 } catch(e) {
                     console.error("fMP4 Probe Error:", e);
                 }
             }
-            console.log("Extracted PTS:", { first: firstPts, last: lastPts });
+            
+            console.log("Final Extracted PTS:", { first: firstPts, last: lastPts });
             resolve({ first: firstPts, last: lastPts });
         });
     };
@@ -366,6 +376,10 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
     count = min(len(segments), max_segments)
     log(f"[*] 총 {len(segments)}개 중 {count}개 분석", "info")
     
+    # 암호화 확인
+    if any(seg.key for seg in segments):
+        log("[!] 암호화된(AES-128 등) 세그먼트가 감지되었습니다. 현재 분석기는 암호화 해제를 지원하지 않아 결과가 부정확할 수 있습니다.", "warning")
+
     last_pts_end = None
     for i in range(count):
         document.getElementById("status-text").innerText = f"분석 중 ({i+1}/{count})"
