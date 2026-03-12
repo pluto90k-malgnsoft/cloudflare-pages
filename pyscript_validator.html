@@ -234,10 +234,11 @@
     window.parseSegmentTimestamps = async (arrayBuffer) => {
         return new Promise((resolve) => {
             const uint8 = new Uint8Array(arrayBuffer);
+            console.log("Segment Header (first 10 bytes):", uint8.slice(0, 10));
             const isTs = uint8[0] === 0x47;
             let firstPts = null;
             let lastPts = null;
-
+ 
             if (isTs) {
                 const packetStream = new muxjs.mp2t.TransportPacketStream();
                 const parseStream = new muxjs.mp2t.TransportParseStream();
@@ -254,9 +255,13 @@
             } else {
                 try {
                     const firstDts = muxjs.mp4.Probe.findFirstDts(uint8);
-                    if (firstDts !== -1) firstPts = firstDts / 90000;
-                } catch(e) {}
+                    console.log("fMP4 Probe Result (firstDts):", firstDts);
+                    if (firstDts !== -1 && firstDts !== null) firstPts = firstDts / 90000;
+                } catch(e) {
+                    console.error("fMP4 Probe Error:", e);
+                }
             }
+            console.log("Extracted PTS:", { first: firstPts, last: lastPts });
             resolve({ first: firstPts, last: lastPts });
         });
     };
