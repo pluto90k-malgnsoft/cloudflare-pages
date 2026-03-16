@@ -217,7 +217,32 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             counts = Counter(jitters)
             grid_ms, _ = counts.most_common(1)[0]
         
-        # v1.9: 영점 교차율(Zero-crossing Rate) 및 진동 분석 (GAP 면역 체계 도입)
+        # v2.0: 타임라인 무결성(Timeline Monotonicity) 체크
+        backward_jump_detected = False
+        large_gap_detected = False
+        jump_info = ""
+        
+        for j in range(1, len(analysis_data)):
+            curr = analysis_data[j]
+            prev = analysis_data[j-1]
+            
+            # 1. Backward Jump 감지 (Monotonicity Check)
+            v_diff = curr['v_start'] - prev['v_start']
+            a_diff = curr['a_start'] - prev['a_start']
+            
+            # v2.0: 시간 역행 임계값 (0.1s 이상 과거로 갈 때 치명적으로 간주)
+            if v_diff < -0.1 or a_diff < -0.1:
+                backward_jump_detected = True
+                jump_info = f"#{prev['index']} -> #{curr['index']} 지점에서 시간 역행 감지 ({prev['v_start']:.3f}s -> {curr['v_start']:.3f}s)"
+                break
+                
+            # 2. Qualitative GAP Analysis (10초 이상의 거대 GAP)
+            if curr['gap']:
+                # 이전 데이터와의 간격이 10초를 넘으면 심각한 결함으로 간주
+                if v_diff > 10.0 or a_diff > 10.0:
+                    large_gap_detected = True
+        
+        # v1.9: 영점 교차율(Zero-crossing Rate) 및 진동 분석 (GAP 면역 체계)
         zcr_count = 0
         fatal_osc_count = 0
         amplitudes_at_cross = []
@@ -246,7 +271,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                     if amp > 0.03:
                         fatal_osc_count += 1
         
-        # 진단 엔진 v1.9 판정 로직
+        # 진단 엔진 v2.0 판정 로직 (우선순위: 타임라인 > 진동 > 오차)
         is_oscillating = fatal_osc_count >= 2
         is_grid_stable = not is_oscillating and len(all_raw_diffs) >= 3
         has_any_gap = len(gap_indices) > 0
@@ -254,8 +279,14 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         status_label = "정상"
         status_color = "var(--success)"
         
-        if is_oscillating:
+        if backward_jump_detected:
+            status_label = "재생 불가 (역행)"
+            status_color = "var(--error)"
+        elif is_oscillating:
             status_label = "위험 (진동)"
+            status_color = "var(--error)"
+        elif large_gap_detected:
+            status_label = "치명적 결함 (거대 GAP)"
             status_color = "var(--error)"
         elif has_any_gap and is_grid_stable:
             status_label = "정상 (복구됨)"
@@ -286,7 +317,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v1.9)', 'header')
+        log('[*] 분석 상세 결과 (v2.0)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
         table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
@@ -298,14 +329,25 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             jit_str = '{:.1f}ms'.format(jit_val * 1000) if jit_val > 0 else "-"
             badge = ""
             
+            # v2.0: 타임라인 무결성 위반 시 시각적 표시
+            is_backward = False
+            if idx > 0:
+                if row['v_start'] < analysis_data[idx-1]['v_start'] - 0.1:
+                    is_backward = True
+
             if off_val is not None:
-                if row['consistent']: badge = '<span class="badge badge-success">Consistent</span>'
+                if is_backward: badge = '<span class="badge badge-error">TIME-REVERSE</span>'
+                elif row['consistent']: badge = '<span class="badge badge-success">Consistent</span>'
                 elif abs(off_val) < 0.05: badge = '<span class="badge badge-success">Synced</span>'
                 elif abs(off_val) < 0.15: badge = '<span class="badge badge-warning">Skew</span>'
                 else: badge = '<span class="badge badge-error">Critical</span>'
             
             if row['gap']:
-                badge += ' <span class="badge" style="background: #64748b">GAP</span>'
+                # 10초 넘는 GAP일 때 전용 배지
+                if idx > 0 and (row['v_start'] - analysis_data[idx-1]['v_start'] > 10.0):
+                    badge += ' <span class="badge" style="background: #be185d">HUGE-GAP</span>'
+                else:
+                    badge += ' <span class="badge" style="background: #64748b">GAP</span>'
             elif row['raw_diff'] != 0:
                 # v1.9: GAP 면역 기간(3개 세그먼트)에는 ZCR-ZIG 미표시
                 idx_in_data = row['index'] - start_index
@@ -323,19 +365,25 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                             if not was_near_gap:
                                 badge += ' <span class="badge" style="background: #f43f5e">ZCR-ZIG</span>'
             
-            table_html += '<tr><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + badge + '</td></tr>'
+            # 행 스타일 추가 (타임라인 위반 시 강조)
+            row_style = ' style="background: rgba(244, 63, 94, 0.1)"' if is_backward else ""
+            table_html += '<tr' + row_style + '><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + badge + '</td></tr>'
         table_html += "</tbody></table>"
         log(table_html)
 
-        # 스마트 진단 가이드 (v1.9)
-        log("[*] 스마트 진단 보고서 (v1.9)", "header")
-        if has_any_gap and is_grid_stable:
+        # 스마트 진단 가이드 (v2.0)
+        log("[*] 스마트 진단 보고서 (v2.0)", "header")
+        if backward_jump_detected:
+            log("🚫 <b>FATAL: TIMELINE REVERSAL (재생 불가):</b> 시간이 과거로 역행하는 치명적인 오류가 포착되었습니다. " + jump_info + " 안드로이드 하드웨어 디코더는 이 지점에서 재생을 중단합니다. 소스 머징(Merging) 과정의 결함이 의심됩니다.", "error")
+        elif large_gap_detected:
+            log("🚫 <b>FATAL: HUGE GAP (인코딩 결함):</b> 10초 이상의 거대한 시간 공백이 발견되었습니다. 단순 네트워크 지연이 아닌 소스 레벨의 데이터 누락으로 간주됩니다.", "error")
+        elif has_any_gap and is_grid_stable:
             log("✅ <b>STABLE AFTER GAP (정상):</b> 불연속(GAP)이 발생했으나 이후 스트림이 매우 안정적으로 회복되었습니다. 안드로이드 크롬에서 정상 재생 가능합니다.", "success")
         elif is_grid_stable:
             log("✅ <b>STABLE GRID (정상):</b> 동적 격자({:.1f}ms) 기반의 보정 패턴이 매우 안정적입니다. 정상 재생 가능합니다.".format(grid_ms), "success")
         elif is_oscillating:
             log("🚫 <b>FATAL OSCILLATION (위험):</b> 연속 비트스트림 내에서 제어가 불가능한 진동이 감지되었습니다. 버퍼 결함을 유발하는 핵심 요인입니다.", "error")
         else:
-            log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 대체로 양호합니다. (GAP 회복 구간 면역 적용됨)", "info")
+            log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 대체로 양호합니다. (타임라인 무결성 확보됨)", "info")
 
     log("[*] 모든 분석 완료", "header")
