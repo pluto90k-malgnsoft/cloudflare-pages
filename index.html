@@ -464,10 +464,17 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
                 offset = v_start - a_start
                 offset_ms = offset * 1000
                 drift = 0
-                if all_offsets:
-                    drift = abs(offset - all_offsets[-1])
                 
-                all_offsets.append(offset)
+                # 연속성 갭 확인 (0.5초 이상 갭/오버랩이 있으면 Drift 계산 제외)
+                has_gap = False
+                if last_v_dts_end is not None and abs(v_start - last_v_dts_end) > 0.5:
+                    has_gap = True
+                
+                if all_offsets and not has_gap:
+                    drift = abs(offset - all_offsets[-1])
+                    all_offsets.append(offset)
+                elif not all_offsets:
+                    all_offsets.append(offset)
                 
                 sync_status = "✅ Synced"
                 log_type = "success"
@@ -481,8 +488,10 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
                 
                 log(f"  🔗 A/V Offset: {offset:.4f}s ({offset_ms:.1f}ms) [{sync_status}]", log_type)
                 
-                if drift > 0.05:
+                if not has_gap and drift > 0.05:
                     log(f"    📉 High Drift detected: {drift*1000:.1f}ms change from prev segment", "error")
+                elif has_gap:
+                    log(f"    ℹ️ Continuity Gap detected. Skipping drift analysis for this segment.", "info")
                 
                 if abs(offset) < 0.001:
                     log("    💡 FFMPEG -async 1 적용 가능성 높음 (Start aligned)", "info")
