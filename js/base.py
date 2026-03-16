@@ -382,7 +382,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v2.1)', 'header')
+        log('[*] 분석 상세 결과 (v2.1.1)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
         table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>A-Gap</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
@@ -445,7 +445,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         log(table_html)
 
         # 스마트 진단 가이드 (v2.0)
-        log("[*] 스마트 진단 보고서 (v2.1)", "header")
+        log("[*] 스마트 진단 보고서 (v2.1.1)", "header")
         if backward_jump_detected:
             log("🚫 <b>FATAL: TIMELINE REVERSAL (재생 불가):</b> 시간이 과거로 역행하는 치명적인 오류가 포착되었습니다. " + jump_info + " 안드로이드 하드웨어 디코더는 이 지점에서 재생을 중단합니다. 소스 머징(Merging) 과정의 결함이 의심됩니다.", "error")
         elif large_gap_detected:
@@ -460,7 +460,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 대체로 양호합니다. (타임라인 무결성 확보됨)", "info")
 
         # v2.1: Aresample 전용 진단 보고서
-        log("[*] Aresample(async=1) 분석 보고서 (v2.1)", "header")
+        log("[*] Aresample(async=1) 분석 보고서 (v2.1.1)", "header")
         if aresample_missing:
             evidence = []
             if avg_audio_gap > 0.15:
