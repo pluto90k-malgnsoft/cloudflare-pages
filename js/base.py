@@ -379,6 +379,9 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         if dts_issue_count > 0:
             status_label = "재생 불가 (DTS 역행)"
             status_color = "var(--error)"
+        elif aresample_missing and dts_issue_count == 0:
+            status_label = "재생 불가 (DTS 위험)"
+            status_color = "var(--error)"
         elif backward_jump_detected:
             status_label = "재생 불가 (역행)"
             status_color = "var(--error)"
@@ -390,9 +393,6 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             status_color = "var(--error)"
         elif large_gap_detected:
             status_label = "치명적 결함 (거대 GAP)"
-            status_color = "var(--error)"
-        elif aresample_missing:
-            status_label = "위험 (Aresample 미적용)"
             status_color = "var(--error)"
         elif has_any_gap and is_grid_stable:
             status_label = "정상 (복구됨)"
@@ -443,7 +443,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v2.3.1)', 'header')
+        log('[*] 분석 상세 결과 (v2.3.2)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
         table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>A-Gap</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
@@ -520,7 +520,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         log(table_html)
 
         # 스마트 진단 가이드 (v2.0)
-        log("[*] 스마트 진단 보고서 (v2.3.1)", "header")
+        log("[*] 스마트 진단 보고서 (v2.3.2)", "header")
         if backward_jump_detected:
             log("🚫 <b>FATAL: TIMELINE REVERSAL (재생 불가):</b> 연속 구간 내에서 시간이 과거로 역행하는 치명적인 오류가 포착되었습니다. " + jump_info + " 안드로이드 하드웨어 디코더는 이 지점에서 재생을 중단합니다.", "error")
         elif boundary_count > 0 and not is_oscillating and not large_gap_detected:
@@ -537,7 +537,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 대체로 양호합니다. (타임라인 무결성 확보됨)", "info")
 
         # v2.1: Aresample 전용 진단 보고서
-        log("[*] Aresample(async=1) 분석 보고서 (v2.3.1)", "header")
+        log("[*] Aresample(async=1) 분석 보고서 (v2.3.2)", "header")
         if aresample_missing:
             evidence = []
             if avg_audio_gap > 0.15:
@@ -557,14 +557,20 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             if all_dur_mismatches:
                 log("  → 평균 Duration 편차: {:.1f}ms / 최대: {:.1f}ms".format(avg_dur_mismatch * 1000, max_dur_mismatch * 1000), "info")
 
-        # v2.3: DTS Sequence 진단 보고서
-        log("[*] DTS Sequence 분석 보고서 (v2.3.1)", "header")
+        # v2.3: DTS Sequence 진단 보고서 (Aresample 연계)
+        log("[*] DTS Sequence 분석 보고서 (v2.3.2)", "header")
         if dts_issues:
-            log("🚫 <b>DTS SEQUENCE VIOLATION:</b> Chromium ChunkDemuxer가 거부하는 DTS 역행이 감지되었습니다.", "error")
+            log("🚫 <b>DTS SEQUENCE VIOLATION (PES 레벨):</b> Chromium ChunkDemuxer가 거부하는 DTS 역행이 감지되었습니다.", "error")
             for issue in dts_issues:
                 log("  → " + issue, "warning")
             log("ℹ️ <b>Chromium 에러:</b> <code>Parsed buffers not in DTS sequence → DEMUXER_ERROR_COULD_NOT_OPEN</code>", "info")
             log("ℹ️ <b>해결:</b> FFmpeg 인코딩 시 <code>-af aresample=async=1</code> 옵션을 적용하여 오디오 DTS 연속성을 보장하세요.", "info")
+        elif aresample_missing:
+            log("⚠️ <b>DTS SEQUENCE 위험 (AAC 프레임 레벨):</b> PES 패킷 레벨에서는 DTS 역행이 감지되지 않았으나, Aresample 미적용 지표가 감지되었습니다.", "warning")
+            log("  → 현재 파서는 PES 레벨(세그먼트당 수개) 타임스탬프만 분석합니다.", "info")
+            log("  → Chromium은 AAC 프레임 레벨(세그먼트당 수백개)까지 파싱하여 미세 DTS 역행을 감지합니다.", "info")
+            log("  → Aresample 미적용 시 AAC 프레임 간 DTS 갭/겹침이 발생하여 <code>Parsed buffers not in DTS sequence</code> 에러가 발생할 수 있습니다.", "warning")
+            log("ℹ️ <b>해결:</b> FFmpeg 인코딩 시 <code>-af aresample=async=1</code> 옵션을 적용하여 AAC 프레임 레벨 DTS 연속성을 보장하세요.", "info")
         else:
             log("✅ <b>DTS 시퀀스 정상:</b> 모든 세그먼트의 A/V DTS가 단조 증가합니다. Chromium ChunkDemuxer 호환 확인.", "success")
 
