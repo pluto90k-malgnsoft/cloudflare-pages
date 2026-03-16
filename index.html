@@ -3,627 +3,496 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HLS DTS Validator | GATE1253</title>
-    <link rel="stylesheet" href="../assets/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/mux.js@6.3.0/dist/mux.min.js"></script>
+    <title>HLS Continuum Validator (PyScript)</title>
+    
+    <!-- Libraries -->
+    <link rel="stylesheet" href="https://pyscript.net/releases/2023.11.1/core.css" />
+    <script type="module" src="https://pyscript.net/releases/2023.11.1/core.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mux.js/6.3.0/mux.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono&display=swap" rel="stylesheet">
+
     <style>
         :root {
-            --primary: #1a73e8;
-            --danger: #d93025;
-            --success: #1e8e3e;
-            --bg: #f8f9fa;
-            --card-bg: #ffffff;
-            --text-main: #202124;
-            --text-sub: #5f6368;
-            --mono: 'JetBrains Mono', monospace;
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --accent-primary: #38bdf8;
+            --accent-secondary: #818cf8;
+            --text-main: #f1f5f9;
+            --text-dim: #94a3b8;
+            --success: #22c55e;
+            --error: #ef4444;
+            --warning: #f59e0b;
         }
 
         body {
-            background-color: var(--bg);
+            background-color: var(--bg-color);
             color: var(--text-main);
             font-family: 'Inter', sans-serif;
             margin: 0;
-            padding: 0;
+            padding: 20px;
             display: flex;
             flex-direction: column;
             align-items: center;
             min-height: 100vh;
         }
 
-        .header {
+        .container {
             width: 100%;
-            padding: 40px 0;
+            max-width: 900px;
+        }
+
+        header {
             text-align: center;
-            background: white;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
+            margin-bottom: 40px;
         }
 
-        .header h1 {
-            margin: 0;
-            font-size: 28px;
-            font-weight: 700;
-            color: var(--primary);
+        h1 {
+            font-weight: 600;
+            letter-spacing: -0.025em;
+            background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
         }
 
-        .header p {
-            margin: 10px 0 0;
-            color: var(--text-sub);
+        p.subtitle {
+            color: var(--text-dim);
+            font-size: 0.95rem;
         }
 
-        .main-container {
-            width: 95%;
-            max-width: 1200px;
-            display: flex;
-            flex-direction: column;
-            gap: 24px;
-            padding-bottom: 60px;
-        }
-
-        .validator-box {
+        .card {
             background: var(--card-bg);
-            padding: 24px;
             border-radius: 16px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+            padding: 24px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            margin-bottom: 24px;
         }
 
         .input-group {
             display: flex;
             gap: 12px;
-            margin-bottom: 20px;
+            margin-bottom: 16px;
         }
 
-        .input-group input {
+        input[type="text"] {
             flex: 1;
-            padding: 14px 20px;
-            border: 2px solid #e0e0e0;
-            border-radius: 12px;
-            font-size: 16px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: white;
+            font-size: 1rem;
             outline: none;
             transition: border-color 0.2s;
         }
 
-        .input-group input:focus {
-            border-color: var(--primary);
+        input[type="text"]:focus {
+            border-color: var(--accent-primary);
         }
 
-        .btn-analyze {
-            background: var(--primary);
+        button {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
             color: white;
             border: none;
-            padding: 0 30px;
-            border-radius: 12px;
+            border-radius: 8px;
+            padding: 12px 24px;
             font-weight: 600;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: transform 0.1s, opacity 0.2s;
         }
 
-        .btn-analyze:hover {
-            background: #1557b0;
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
-        .status-bar {
-            padding: 12px 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-weight: 500;
-            display: none;
-        }
-
-        .status-info { background: #e8f0fe; color: #1967d2; }
-        .status-error { background: #fce8e6; color: #c5221f; }
-
-        .dashboard {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-
-        @media (max-width: 900px) {
-            .dashboard { grid-template-columns: 1fr; }
-        }
-
-        .track-card {
-            background: white;
-            border-radius: 12px;
-            border: 1px solid #e0e0e0;
-            overflow: hidden;
-        }
-
-        .track-header {
-            padding: 16px 20px;
-            background: #f1f3f4;
-            border-bottom: 1px solid #e0e0e0;
+        .settings {
             display: flex;
-            justify-content: space-between;
+            gap: 20px;
+            color: var(--text-dim);
+            font-size: 0.85rem;
             align-items: center;
+            flex-wrap: wrap;
         }
 
-        .track-header h3 {
-            margin: 0;
-            font-size: 16px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .badge {
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: 700;
-        }
-
-        .badge-video { background: #e8f0fe; color: #1967d2; }
-        .badge-audio { background: #fef7e0; color: #b06000; }
-
-        .log-container {
-            height: 400px;
-            overflow-y: auto;
-            padding: 10px;
-            font-family: var(--mono);
-            font-size: 13px;
-            background: #fafafa;
-        }
-
-        .log-entry {
-            display: grid;
-            grid-template-columns: 80px 160px 1fr;
-            padding: 6px 10px;
-            border-bottom: 1px solid #f0f0f0;
-            align-items: center;
-        }
-
-        .log-entry.header-row {
-            font-weight: 700;
-            background: #eee;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-
-        .log-entry.error {
-            background: #fce8e6;
-            color: #d93025;
-            font-weight: 700;
-        }
-
-        .reversal-alert {
-            color: var(--danger);
-            font-weight: 700;
+        label {
             display: flex;
             align-items: center;
             gap: 6px;
         }
 
-        .summary-panel {
-            margin-top: 24px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 16px;
+        select, input[type="number"] {
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: white;
+            border-radius: 4px;
+            padding: 4px 8px;
+            outline: none;
         }
 
-        .stat-card {
-            background: white;
-            padding: 20px;
+        #output-container {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            max-height: 600px;
+            overflow-y: auto;
             border-radius: 12px;
-            border: 1px solid #e0e0e0;
-            text-align: center;
+            padding: 20px;
+            background: #020617;
+            border: 1px solid #1e293b;
         }
 
-        .stat-value {
-            font-size: 24px;
-            font-weight: 700;
-            margin-bottom: 4px;
-        }
+        .log-entry { margin-bottom: 8px; border-left: 2px solid #334155; padding-left: 12px; }
+        .log-header { color: var(--accent-primary); font-weight: 600; margin-top: 16px; }
+        .log-success { color: var(--success); }
+        .log-error { color: var(--error); font-weight: 600; }
+        .log-warning { color: var(--warning); }
+        .log-info { color: var(--text-dim); }
 
-        .stat-label {
-            font-size: 12px;
-            color: var(--text-sub);
-            text-transform: uppercase;
-        }
-
-        .stat-card.error { border-color: var(--danger); }
-        .stat-card.error .stat-value { color: var(--danger); }
-
-        /* Loader */
-        .spinner {
-            width: 24px;
-            height: 24px;
-            border: 3px solid rgba(255,255,255,0.3);
-            border-top: 3px solid white;
+        .loading-spinner {
+            display: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255,255,255,0.1);
+            border-top: 2px solid var(--accent-primary);
             border-radius: 50%;
             animation: spin 1s linear infinite;
-            display: none;
-            margin: 0 auto;
         }
 
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
-        .btn-analyze.loading .spinner { display: block; }
-        .btn-analyze.loading span { display: none; }
+        .progress-bar-container {
+            width: 100%;
+            height: 4px;
+            background: #334155;
+            border-radius: 2px;
+            margin-top: 20px;
+            overflow: hidden;
+            display: none;
+        }
+        #progress-bar {
+            width: 0%;
+            height: 100%;
+            background: var(--accent-primary);
+            transition: width 0.3s ease;
+        }
+
+        .cors-hint {
+            font-size: 0.75rem;
+            margin-top: 10px;
+            color: var(--warning);
+            opacity: 0.9;
+        }
     </style>
 </head>
 <body>
-    <header class="header">
-        <h1>GATE1253 HLS Validator</h1>
-        <p>HLS 스트림 분석 및 DTS 역전 현상 체크 (Video & Audio)</p>
+
+<div class="container">
+    <header>
+        <h1>HLS Continuum Validator</h1>
+        <p class="subtitle">PyScript + mux.js 를 이용한 브라우저 기반 고정밀 연속성 분석 도구</p>
     </header>
 
-    <main class="main-container">
-        <div class="validator-box">
-            <div class="input-group">
-                <input type="text" id="hls-url" placeholder="HLS 주소를 입력하세요 (.m3u8)" value="">
-                <button id="analyze-btn" class="btn-analyze">
-                    <span>분석 시작</span>
-                    <div class="spinner"></div>
-                </button>
-            </div>
-            <div id="status-display" class="status-bar"></div>
-
-            <div class="summary-panel">
-                <div class="stat-card">
-                    <div id="segment-count" class="stat-value">0</div>
-                    <div class="stat-label">분석된 세그먼트</div>
-                </div>
-                <div class="stat-card" id="video-error-card">
-                    <div id="video-errors" class="stat-value">0</div>
-                    <div class="stat-label">비디오 DTS 오류</div>
-                </div>
-                <div class="stat-card" id="audio-error-card">
-                    <div id="audio-errors" class="stat-value">0</div>
-                    <div class="stat-label">오디오 DTS 오류</div>
-                </div>
-            </div>
+    <div class="card">
+        <div class="input-group">
+            <input type="text" id="m3u8-url" placeholder="분석할 HLS(.m3u8) 주소를 입력하세요" value="">
+            <button id="btn-run" py-click="start_analysis">분석 시작</button>
         </div>
-
-        <div class="dashboard">
-            <!-- Video Track -->
-            <div class="track-card">
-                <div class="track-header">
-                    <h3>Video Track (DTS)</h3>
-                    <span class="badge badge-video">VIDEO</span>
-                </div>
-                <div id="video-log" class="log-container">
-                    <div class="log-entry header-row">
-                        <div>SEQ</div>
-                        <div>DTS (Raw)</div>
-                        <div>Status / Diff</div>
-                    </div>
-                    <!-- Entries go here -->
-                </div>
-            </div>
-
-            <!-- Audio Track -->
-            <div class="track-card">
-                <div class="track-header">
-                    <h3>Audio Track (DTS)</h3>
-                    <span class="badge badge-audio">AUDIO</span>
-                </div>
-                <div id="audio-log" class="log-container">
-                    <div class="log-entry header-row">
-                        <div>SEQ</div>
-                        <div>DTS (Raw)</div>
-                        <div>Status / Diff</div>
-                    </div>
-                    <!-- Entries go here -->
-                </div>
-            </div>
+        <div class="settings">
+            <label>
+                검사 세그먼트 수: 
+                <input type="number" id="max-segs" value="10" min="1" max="100" style="width: 60px;">
+            </label>
+            <label>
+                프록시 URL 프리픽스 (선택):
+                <input type="text" id="proxy-prefix" placeholder="https://cloudflare-proxy.pluto90k.workers.dev/?url=" value="https://cloudflare-proxy.pluto90k.workers.dev/?url=" style="width: 250px; padding: 4px 8px; font-size: 0.8rem;">
+            </label>
+            <div id="loader" class="loading-spinner"></div>
+            <span id="status-text" style="font-size: 0.8rem; color: var(--accent-primary);">준비 완료</span>
         </div>
-    </main>
+        <div class="cors-hint">
+            ⚠️ <b>CORS 안내:</b> 외부 도메인 영상은 보안 정책상 프록시가 꼭 필요합니다. 에러 발생 시 다른 대안 앱이나 브라우저 확장을 사용해주세요.
+        </div>
+        <div class="progress-bar-container" id="progress-container">
+            <div id="progress-bar"></div>
+        </div>
+    </div>
 
-    <script>
-        const ROLLOVER_THRESHOLD = 0x1FFFFFFFF; // 33-bit rollover for MPEG-TS (8589934591)
-        const ROLLOVED_VALUE = Math.pow(2, 33);
+    <div id="output-container">
+        <div class="log-info">애플리케이션이 준비되었습니다. M3U8 주소를 입력하고 분석을 시작하세요.</div>
+    </div>
+</div>
 
-        const state = {
-            video: { lastDts: -1, errors: 0, count: 0 },
-            audio: { lastDts: -1, errors: 0, count: 0 },
-            totalSegments: 0,
-            isAnalyzing: false
-        };
+<py-config>
+    packages = ["m3u8", "ssl", "certifi"]
+</py-config>
 
-        const elements = {
-            urlInput: document.getElementById('hls-url'),
-            analyzeBtn: document.getElementById('analyze-btn'),
-            status: document.getElementById('status-display'),
-            videoLog: document.getElementById('video-log'),
-            audioLog: document.getElementById('audio-log'),
-            segCount: document.getElementById('segment-count'),
-            vErrors: document.getElementById('video-errors'),
-            aErrors: document.getElementById('audio-errors'),
-            vErrorCard: document.getElementById('video-error-card'),
-            aErrorCard: document.getElementById('audio-error-card')
-        };
-
-        elements.analyzeBtn.addEventListener('click', startAnalysis);
-
-        async function startAnalysis() {
-            if (state.isAnalyzing) return;
-            const url = elements.urlInput.value.trim();
-            if (!url) return showStatus('URL을 입력해주세요.', 'error');
-
-            resetState();
-            state.isAnalyzing = true;
-            elements.analyzeBtn.classList.add('loading');
-            showStatus('플레이리스트를 가져오는 중...', 'info');
-
-            try {
-                const response = await fetch(url);
-                if (!response.ok) throw new Error('Playlist fetch failed');
-                const text = await response.text();
-                
-                // Redirect 대응: fetch 후의 최종 URL(response.url)을 기준 주소로 사용
-                const finalUrl = response.url;
-                const segmentUrls = parsePlaylist(text, finalUrl);
-                
-                if (segmentUrls.length === 0) throw new Error('No segments found in playlist');
-
-                showStatus(`${segmentUrls.length}개의 세그먼트를 분석합니다...`, 'info');
-
-                for (let i = 0; i < segmentUrls.length; i++) {
-                    await analyzeSegment(segmentUrls[i], i);
-                }
-
-                showStatus('분석 완료', 'info');
-            } catch (err) {
-                console.error(err);
-                showStatus('오류 발생: ' + err.message, 'error');
-            } finally {
-                state.isAnalyzing = false;
-                elements.analyzeBtn.classList.remove('loading');
-            }
-        }
-
-        function resetState() {
-            state.video = { lastDts: -1, errors: 0, count: 0 };
-            state.audio = { lastDts: -1, errors: 0, count: 0 };
-            state.totalSegments = 0;
+<script>
+    // JS Helper: mux.js extraction
+    window.parseSegmentTimestamps = async (arrayBuffer) => {
+        return new Promise((resolve) => {
+            const uint8 = new Uint8Array(arrayBuffer);
+            const isTs = uint8[0] === 0x47;
             
-            elements.segCount.textContent = '0';
-            elements.vErrors.textContent = '0';
-            elements.aErrors.textContent = '0';
-            elements.vErrorCard.classList.remove('error');
-            elements.aErrorCard.classList.remove('error');
-
-            // Keep headers
-            const vHeader = elements.videoLog.querySelector('.header-row');
-            const aHeader = elements.audioLog.querySelector('.header-row');
-            elements.videoLog.innerHTML = '';
-            elements.audioLog.innerHTML = '';
-            elements.videoLog.appendChild(vHeader);
-            elements.audioLog.appendChild(aHeader);
-        }
-
-        function showStatus(msg, type) {
-            elements.status.textContent = msg;
-            elements.status.style.display = 'block';
-            elements.status.className = 'status-bar status-' + type;
-        }
-
-        function parsePlaylist(text, baseUrl) {
-            const lines = text.split('\n');
-            const urls = [];
-
-            for (let line of lines) {
-                line = line.trim();
-                if (line && !line.startsWith('#')) {
-                    try {
-                        // URL 생성자를 사용하여 상대 경로를 기준 주소(baseUrl)에 맞춰 절대 경로로 변환
-                        const absoluteUrl = new URL(line, baseUrl).href;
-                        urls.push(absoluteUrl);
-                    } catch (e) {
-                        console.error(`Invalid URL line: ${line}`, e);
-                    }
-                }
-            }
-            return urls;
-        }
-
-        async function analyzeSegment(url, index) {
-            try {
-                const response = await fetch(url);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            let video = { firstPts: null, lastPts: null, firstDts: null, lastDts: null };
+            let audio = { firstPts: null, lastPts: null, firstDts: null, lastDts: null };
+            let foundStreamTypes = new Set();
+            
+            if (isTs) {
+                let scrambledCount = 0;
                 
-                const buffer = await response.arrayBuffer();
-                const uint8 = new Uint8Array(buffer);
-
-                let videoDts = -1;
-                let audioDts = -1;
-
-                // 1. Detect format (TS or MP4)
-                const isTs = uint8[0] === 0x47; // TS Sync byte
-                const isMp4 = !isTs && (uint8.length > 8 && (
-                    uint8[4] === 0x66 && uint8[5] === 0x74 && uint8[6] === 0x79 && uint8[7] === 0x70 || // ftyp
-                    uint8[4] === 0x6d && uint8[5] === 0x6f && uint8[6] === 0x6f && uint8[7] === 0x66    // moof
-                ));
-
-                if (isTs) {
-                    try {
-                        const packetStream = new muxjs.mp2t.TransportPacketStream();
-                        const parseStream = new muxjs.mp2t.TransportParseStream();
-                        packetStream.pipe(parseStream);
+                for (let i = 0; i < uint8.length - 188; i++) {
+                    if (uint8[i] === 0x47) {
+                        const pusi = (uint8[i + 1] & 0x40) !== 0; 
+                        const scramblingControl = (uint8[i + 3] >> 6) & 0x03;
                         
-                        parseStream.on('data', (data) => {
-                            if (data.type === 'pes') {
-                                const type = (data.streamType === 0x1b || data.streamType === 0x24 || data.streamType === 0x01 || data.streamType === 0x02) ? 'video' : 'audio';
-                                if (type === 'video' && videoDts === -1 && typeof data.dts !== 'undefined') videoDts = data.dts;
-                                else if (type === 'audio' && audioDts === -1 && typeof data.dts !== 'undefined') audioDts = data.dts;
+                        if (scramblingControl !== 0) {
+                            scrambledCount++;
+                        }
+                        
+                        if (pusi && scramblingControl === 0) {
+                            const adaptationFieldControl = (uint8[i + 3] >> 4) & 0x03;
+                            let payloadOffset = i + 4;
+                            
+                            if (adaptationFieldControl === 2 || adaptationFieldControl === 3) {
+                                const adaptationLength = uint8[payloadOffset];
+                                payloadOffset += 1 + adaptationLength;
                             }
-                        });
-
-                        packetStream.push(uint8);
-                        packetStream.flush();
-
-                        // Fallback 1: Transmuxer
-                        if (videoDts === -1 && audioDts === -1) {
-                            const transmuxer = new muxjs.mp4.Transmuxer();
-                            transmuxer.on('data', (data) => {
-                                if (data.type === 'video' && videoDts === -1) videoDts = data.dts;
-                                else if (data.type === 'audio' && audioDts === -1) audioDts = data.dts;
-                            });
-                            transmuxer.push(uint8);
-                            transmuxer.flush();
-                        }
-
-                        // Fallback 2: Manual PES Analysis (Robust)
-                        if (videoDts === -1 && audioDts === -1) {
-                            const manual = extractDtsManual(uint8);
-                            videoDts = manual.videoDts;
-                            audioDts = manual.audioDts;
-                        }
-                    } catch (e) {
-                        console.error('TS parsing error:', e);
-                    }
-                } else if (isMp4) {
-                    // fMP4 extraction
-                    try {
-                        videoDts = muxjs.mp4.Probe.findFirstDts(uint8);
-                        if (videoDts === -1) {
-                            const transmuxer = new muxjs.mp4.Transmuxer();
-                            transmuxer.on('data', (data) => {
-                                if (data.type === 'video' && videoDts === -1) videoDts = data.dts;
-                            });
-                            transmuxer.push(uint8);
-                            transmuxer.flush();
-                        }
-                    } catch (e) {
-                        console.warn('MP4 Probe failed:', e);
-                    }
-                }
-
-                if (videoDts !== -1) logDts('video', index, videoDts);
-                if (audioDts !== -1) logDts('audio', index, audioDts);
-
-                if (videoDts === -1 && audioDts === -1) {
-                    const msg = isTs ? 'TS (No timing found)' : (isMp4 ? 'fMP4 (No timing found)' : 'Unknown Format');
-                    addStatusLog(index, msg);
-                }
-
-                state.totalSegments++;
-                elements.segCount.textContent = state.totalSegments;
-
-            } catch (err) {
-                console.error(`Segment ${index} error:`, err);
-                addStatusLog(index, `Error: ${err.message}`, true);
-            }
-        }
-
-        // TS 파일에서 직접 PES 헤더를 찾아 DTS를 추출하는 보조 함수
-        function extractDtsManual(uint8) {
-            let videoDts = -1;
-            let audioDts = -1;
-
-            for (let i = 0; i < uint8.length - 188; i += 188) {
-                if (uint8[i] !== 0x47) continue;
-
-                const hasPayload = uint8[i + 3] & 0x10;
-                const pusi = uint8[i + 1] & 0x40;
-
-                if (hasPayload && pusi) {
-                    let offset = 4;
-                    const hasAdaptation = uint8[i + 3] & 0x20;
-                    if (hasAdaptation) {
-                        offset += 1 + uint8[i + 4];
-                    }
-
-                    if (offset < 184 && 
-                        uint8[i + offset] === 0x00 && 
-                        uint8[i + offset + 1] === 0x00 && 
-                        uint8[i + offset + 2] === 0x01) {
-                        
-                        const streamId = uint8[i + offset + 3];
-                        const isVideo = streamId >= 0xE0 && streamId <= 0xEF;
-                        const isAudio = (streamId >= 0xC0 && streamId <= 0xDF) || (streamId >= 0xBD && streamId <= 0xBF);
-
-                        if ((isVideo && videoDts === -1) || (isAudio && audioDts === -1)) {
-                            const pesFlags = uint8[i + offset + 7];
-                            const hasPtsDts = (pesFlags & 0xC0) >> 6; // 2: PTS only, 3: PTS & DTS
-
-                            if (hasPtsDts >= 2) {
-                                let dtsOffset = offset + 9;
-                                if (hasPtsDts === 3) dtsOffset += 5; // Skip PTS to get DTS
-
-                                // TS PTS/DTS is 33 bits
-                                const b0 = uint8[i + dtsOffset];
-                                const b1 = uint8[i + dtsOffset + 1];
-                                const b2 = uint8[i + dtsOffset + 2];
-                                const b3 = uint8[i + dtsOffset + 3];
-                                const b4 = uint8[i + dtsOffset + 4];
-
-                                const dts = ((b0 & 0x0E) * Math.pow(2, 29)) +
-                                            (b1 * Math.pow(2, 22)) +
-                                            ((b2 & 0xFE) * Math.pow(2, 14)) +
-                                            (b3 * Math.pow(2, 7)) +
-                                            ((b4 & 0xFE) >> 1);
-
-                                if (isVideo) videoDts = dts;
-                                else audioDts = dts;
+                            
+                            if (payloadOffset < i + 188 - 6) { 
+                                if (uint8[payloadOffset] === 0x00 && uint8[payloadOffset + 1] === 0x00 && uint8[payloadOffset + 2] === 0x01) {
+                                    const streamId = uint8[payloadOffset + 3];
+                                    let target = null;
+                                    
+                                    if (streamId >= 0xE0 && streamId <= 0xEF) target = video;
+                                    else if (streamId >= 0xC0 && streamId <= 0xDF) target = audio;
+                                    
+                                    if (target) {
+                                        foundStreamTypes.add(streamId);
+                                        const ptsDtsIndicator = (uint8[payloadOffset + 7] >> 6) & 0x03;
+                                        
+                                        if (ptsDtsIndicator === 2 || ptsDtsIndicator === 3) {
+                                            let pts = ((uint8[payloadOffset + 9] & 0x0E) * 536870912) +
+                                                      ((uint8[payloadOffset + 10] & 0xFF) * 2097152) +
+                                                      ((uint8[payloadOffset + 11] & 0xFE) * 16384) +
+                                                      ((uint8[payloadOffset + 12] & 0xFF) * 128) +
+                                                      ((uint8[payloadOffset + 13] & 0xFE) / 2);
+                                            
+                                            const ptsSeconds = pts / 90000;
+                                            if (target.firstPts === null || ptsSeconds < target.firstPts) target.firstPts = ptsSeconds;
+                                            if (target.lastPts === null || ptsSeconds > target.lastPts) target.lastPts = ptsSeconds;
+                                            
+                                            if (ptsDtsIndicator === 3) {
+                                                let dts = ((uint8[payloadOffset + 14] & 0x0E) * 536870912) +
+                                                          ((uint8[payloadOffset + 15] & 0xFF) * 2097152) +
+                                                          ((uint8[payloadOffset + 16] & 0xFE) * 16384) +
+                                                          ((uint8[payloadOffset + 17] & 0xFF) * 128) +
+                                                          ((uint8[payloadOffset + 18] & 0xFE) / 2);
+                                                const dtsSeconds = dts / 90000;
+                                                if (target.firstDts === null || dtsSeconds < target.firstDts) target.firstDts = dtsSeconds;
+                                                if (target.lastDts === null || dtsSeconds > target.lastDts) target.lastDts = dtsSeconds;
+                                            } else {
+                                                if (target.firstDts === null || ptsSeconds < target.firstDts) target.firstDts = ptsSeconds;
+                                                if (target.lastDts === null || ptsSeconds > target.lastDts) target.lastDts = ptsSeconds;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
+                        i += 187;
                     }
                 }
-                if (videoDts !== -1 && audioDts !== -1) break;
-            }
-            return { videoDts, audioDts };
-        }
-
-        function addStatusLog(seq, msg, isError = false) {
-            const row = document.createElement('div');
-            row.className = 'log-entry' + (isError ? ' error' : '');
-            row.style.background = isError ? '#fce8e6' : '#f8f9fa';
-            row.innerHTML = `<div>#${seq}</div><div>-</div><div style="color: ${isError ? '#d93025' : '#888'}">${msg}</div>`;
-            elements.videoLog.insertBefore(row, elements.videoLog.children[1]);
-        }
-
-
-        function logDts(type, seq, dts) {
-            const track = state[type];
-            const logEl = type === 'video' ? elements.videoLog : elements.audioLog;
-            const errorCountEl = type === 'video' ? elements.vErrors : elements.aErrors;
-            const errorCardEl = type === 'video' ? elements.vErrorCard : elements.aErrorCard;
-
-            let statusText = 'OK';
-            let isError = false;
-            let diffText = '';
-
-            if (track.lastDts !== -1) {
-                const diff = dts - track.lastDts;
-                diffText = (diff >= 0 ? '+' : '') + diff;
-
-                // Check for reversal
-                // Handling 33-bit rollover: if diff is very large negative, it might be a rollover
-                if (diff < 0) {
-                    // Check if it's a rollover or a real reversal
-                    // If it's near the 33-bit ceiling, we treat as rollover
-                    if (Math.abs(diff + ROLLOVED_VALUE) < 1000000) {
-                         statusText = 'ROLLOVER (OK)';
-                    } else {
-                         statusText = 'REVERSAL ERROR!';
-                         isError = true;
+                
+                if (scrambledCount > 0) {
+                    window.addLog(`[!] 패킷 암호화 블록 감지! 타임스탬프 추출 불가.`, "error");
+                }
+            } else {
+                try {
+                    const dts = muxjs.mp4.Probe.findFirstDts(uint8);
+                    if (typeof dts === 'number' && dts !== -1 && !isNaN(dts)) {
+                        video.firstDts = dts / 90000;
+                        video.firstPts = video.firstDts; 
                     }
+                } catch(e) {
+                    console.error("fMP4 Probe Error:", e);
                 }
             }
-
-            if (isError) {
-                track.errors++;
-                errorCountEl.textContent = track.errors;
-                errorCardEl.classList.add('error');
-            }
-
-            const row = document.createElement('div');
-            row.className = 'log-entry' + (isError ? ' error' : '');
-            row.innerHTML = `
-                <div>#${seq}</div>
-                <div>${dts}</div>
-                <div>${statusText} ${diffText ? `(${diffText})` : ''}</div>
-            `;
             
-            // Inset after header
-            logEl.insertBefore(row, logEl.children[1]);
-            track.lastDts = dts;
-            track.count++;
-        }
-    </script>
+            resolve({ 
+                video, 
+                audio, 
+                hasVideo: video.firstPts !== null, 
+                hasAudio: audio.firstPts !== null 
+            });
+        });
+    };
+
+    window.addLog = (msg, type) => {
+        const out = document.getElementById('output-container');
+        const entry = document.createElement('div');
+        entry.className = 'log-entry' + (type ? ' log-' + type : '');
+        entry.innerHTML = msg;
+        out.appendChild(entry);
+        out.scrollTop = out.scrollHeight;
+    };
+
+    window.updateProgress = (percent) => {
+        document.getElementById('progress-bar').style.width = percent + '%';
+    };
+</script>
+
+<py-script>
+import asyncio
+import m3u8
+import urllib.parse
+from js import window, document, Uint8Array
+from pyodide.http import pyfetch
+
+def log(msg, type=None):
+    window.addLog(msg, type)
+
+async def start_analysis(event):
+    btn = document.getElementById("btn-run")
+    btn.disabled = True
+    document.getElementById("loader").style.display = "inline-block"
+    document.getElementById("status-text").innerText = "분석 시작 중..."
+    document.getElementById("progress-container").style.display = "block"
+    document.getElementById("output-container").innerHTML = ""
+    window.updateProgress(0)
+
+    url = document.getElementById("m3u8-url").value
+    if not url:
+        log("HLS URL을 입력해 주세요.", "error")
+        reset_ui()
+        return
+
+    max_segs = int(document.getElementById("max-segs").value)
+    proxy_prefix = document.getElementById("proxy-prefix").value.strip()
+
+    try:
+        await check_hls_continuity(url, max_segs, proxy_prefix)
+    except Exception as e:
+        log(f"분석 중 치명적 오류: {str(e)}", "error")
+    finally:
+        reset_ui()
+
+def reset_ui():
+    document.getElementById("btn-run").disabled = False
+    document.getElementById("loader").style.display = "none"
+    document.getElementById("status-text").innerText = "완료"
+
+def wrap_proxy(url, prefix):
+    if not prefix:
+        return url
+    
+    # 만약 prefix 끝에 url 파라미터가 명시되어 있다면 인코딩해서 붙임 (예: ?url=)
+    if prefix.endswith("="):
+        return prefix + urllib.parse.quote(url)
+    
+    # 그 외에는 그냥 단순 문자열 합치기 (예: https://proxy.com/)
+    return prefix + url
+
+async def fetch_with_proxy(url, prefix):
+    final_url = wrap_proxy(url, prefix)
+    try:
+        res = await pyfetch(final_url)
+        if res.ok: return res
+        raise Exception(f"HTTP {res.status}")
+    except Exception as e:
+        raise Exception(f"네트워크/CORS 오류: {final_url[:60]}... ({e})")
+
+async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
+    log(f"[*] 분석 시작: {m3u8_url}", "header")
+    
+    try:
+        resp = await fetch_with_proxy(m3u8_url, proxy_prefix)
+        content = await resp.string()
+        playlist = m3u8.loads(content, uri=m3u8_url)
+    except Exception as e:
+        log(f"플레이리스트 로드 실패: {e}", "error")
+        return
+
+    if playlist.is_variant:
+        log("[*] 마스터 플레이리스트 감지. 스트림 선택 중...", "info")
+        media_url = playlist.playlists[0].absolute_uri
+        resp = await fetch_with_proxy(media_url, proxy_prefix)
+        content = await resp.string()
+        playlist = m3u8.loads(content, uri=media_url)
+
+    segments = playlist.segments
+    if not segments:
+        log("세그먼트 정보를 찾을 수 없습니다.", "error")
+        return
+
+    count = min(len(segments), max_segments)
+    log(f"[*] 총 {len(segments)}개 중 {count}개 분석", "info")
+    
+    # 암호화 확인
+    if any(seg.key for seg in segments):
+        log("[!] 암호화된(AES-128 등) 세그먼트가 감지되었습니다. 현재 분석기는 암호화 해제를 지원하지 않아 결과가 부정확할 수 있습니다.", "warning")
+
+    last_v_dts_end = None
+    last_a_dts_end = None
+    
+    for i in range(count):
+        document.getElementById("status-text").innerText = f"분석 중 ({i+1}/{count})"
+        seg = segments[i]
+        log(f"Seg {i}: {seg.uri}", "header")
+        
+        try:
+            r = await fetch_with_proxy(seg.absolute_uri, proxy_prefix)
+            data = await r.bytes()
+            ts_info = await window.parseSegmentTimestamps(Uint8Array.new(data).buffer)
+            
+            # ts_info: { video: {firstPts, lastPts...}, audio: {firstPts...}, hasVideo, hasAudio }
+            v = ts_info.video
+            a = ts_info.audio
+            
+            v_start = v.firstPts if v.firstPts is not None else v.firstDts
+            a_start = a.firstPts if a.firstPts is not None else a.firstDts
+            
+            if v_start is not None:
+                log(f"  Video PTS: {v.firstPts:.3f} | DTS: {v.firstDts:.3f}", "info")
+            if a_start is not None:
+                log(f"  Audio PTS: {a.firstPts:.3f} | DTS: {a.firstDts:.3f}", "info")
+            
+            # A/V Offset 계산
+            if v_start is not None and a_start is not None:
+                offset = v_start - a_start
+                offset_ms = offset * 1000
+                sync_status = "✅ Synced" if abs(offset) < 0.01 else "⚠️ Skewed"
+                log(f"  🔗 A/V Offset: {offset:.4f}s ({offset_ms:.1f}ms) [{sync_status}]", "warning" if abs(offset) >= 0.01 else "success")
+                
+                if abs(offset) < 0.001:
+                    log("    💡 FFMPEG -async 1 적용 가능성 높음 (Start aligned)", "info")
+            
+            # 연속성 체크 (Video 기준)
+            if v_start is not None and last_v_dts_end is not None:
+                v_diff = v_start - last_v_dts_end
+                if abs(v_diff) > 0.1:
+                    log(f"  🎬 Video Gap/Overlap: {v_diff:.3f}s", "error")
+                else:
+                    log(f"  🎬 Video Continuity: OK ({v_diff:.3f}s)", "success")
+
+            # 연속성 체크 (Audio 기준)
+            if a_start is not None and last_a_dts_end is not None:
+                a_diff = a_start - last_a_dts_end
+                if abs(a_diff) > 0.1:
+                    log(f"  🎵 Audio Gap/Overlap: {a_diff:.3f}s", "error")
+                
+            # 다음 분석을 위해 현재 세그먼트의 끝 시간 저장
+            last_v_dts_end = v.lastPts if v.lastPts is not None else v.lastDts
+            last_a_dts_end = a.lastPts if a.lastPts is not None else a.lastDts
+            
+            window.updateProgress(int((i+1)/count * 100))
+        except Exception as e:
+            log(f"  [!] 세그먼트 오류: {e}", "error")
+
+    log("[*] 모든 분석 완료", "header")
+</py-script>
+
 </body>
 </html>
