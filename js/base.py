@@ -225,12 +225,14 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             video_dts_ok = True if ts_info.videoDtsMonotonic else False
             dts_merge_ok = True if ts_info.dtsMergeOk else False
 
-            if not audio_dts_ok:
-                dts_issues.append("Seg#" + str(actual_idx) + ": 오디오 DTS 역행 (세그먼트 내)")
-            if not video_dts_ok:
-                dts_issues.append("Seg#" + str(actual_idx) + ": 비디오 DTS 역행 (세그먼트 내)")
-            if not dts_merge_ok:
-                dts_issues.append("Seg#" + str(actual_idx) + ": A/V DTS 병합 실패 (Chromium 재생 불가)")
+            # 콘텐츠 경계/GAP 세그먼트는 다른 타임라인이므로 DTS 분석에서 제외
+            if not has_gap and not is_content_boundary:
+                if not audio_dts_ok:
+                    dts_issues.append("Seg#" + str(actual_idx) + ": 오디오 DTS 역행 (세그먼트 내)")
+                if not video_dts_ok:
+                    dts_issues.append("Seg#" + str(actual_idx) + ": 비디오 DTS 역행 (세그먼트 내)")
+                if not dts_merge_ok:
+                    dts_issues.append("Seg#" + str(actual_idx) + ": A/V DTS 병합 실패 (Chromium 재생 불가)")
 
             # Inter-segment DTS 연속성 (콘텐츠 경계 제외)
             inter_seg_dts_ok = True
@@ -441,7 +443,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v2.3)', 'header')
+        log('[*] 분석 상세 결과 (v2.3.1)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
         table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>A-Gap</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
@@ -504,20 +506,21 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 badge += ' <span class="badge" style="background: #7c3aed">AUDIO-GAP</span>'
             if row.get('audio_dur_mismatch') is not None and abs(row['audio_dur_mismatch']) > 0.1 and not row.get('gap'):
                 badge += ' <span class="badge" style="background: #ea580c">DUR-DRIFT</span>'
-            # v2.3: DTS 시퀀스 배지
-            if not row.get('dts_merge_ok', True):
-                badge += ' <span class="badge badge-error">DTS-FAIL</span>'
-            elif not row.get('audio_dts_ok', True):
-                badge += ' <span class="badge" style="background: #dc2626">DTS-REV</span>'
-            elif not row.get('inter_seg_dts_ok', True):
-                badge += ' <span class="badge" style="background: #dc2626">DTS-GAP</span>'
+            # v2.3: DTS 시퀀스 배지 (콘텐츠 경계/GAP 제외)
+            if not row.get('gap') and not row.get('content_boundary'):
+                if not row.get('dts_merge_ok', True):
+                    badge += ' <span class="badge badge-error">DTS-FAIL</span>'
+                elif not row.get('audio_dts_ok', True):
+                    badge += ' <span class="badge" style="background: #dc2626">DTS-REV</span>'
+                elif not row.get('inter_seg_dts_ok', True):
+                    badge += ' <span class="badge" style="background: #dc2626">DTS-GAP</span>'
 
             table_html += '<tr' + row_style + '><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + a_gap_str + '</td><td>' + badge + '</td></tr>'
         table_html += "</tbody></table>"
         log(table_html)
 
         # 스마트 진단 가이드 (v2.0)
-        log("[*] 스마트 진단 보고서 (v2.3)", "header")
+        log("[*] 스마트 진단 보고서 (v2.3.1)", "header")
         if backward_jump_detected:
             log("🚫 <b>FATAL: TIMELINE REVERSAL (재생 불가):</b> 연속 구간 내에서 시간이 과거로 역행하는 치명적인 오류가 포착되었습니다. " + jump_info + " 안드로이드 하드웨어 디코더는 이 지점에서 재생을 중단합니다.", "error")
         elif boundary_count > 0 and not is_oscillating and not large_gap_detected:
@@ -534,7 +537,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 대체로 양호합니다. (타임라인 무결성 확보됨)", "info")
 
         # v2.1: Aresample 전용 진단 보고서
-        log("[*] Aresample(async=1) 분석 보고서 (v2.3)", "header")
+        log("[*] Aresample(async=1) 분석 보고서 (v2.3.1)", "header")
         if aresample_missing:
             evidence = []
             if avg_audio_gap > 0.15:
@@ -555,7 +558,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 log("  → 평균 Duration 편차: {:.1f}ms / 최대: {:.1f}ms".format(avg_dur_mismatch * 1000, max_dur_mismatch * 1000), "info")
 
         # v2.3: DTS Sequence 진단 보고서
-        log("[*] DTS Sequence 분석 보고서 (v2.3)", "header")
+        log("[*] DTS Sequence 분석 보고서 (v2.3.1)", "header")
         if dts_issues:
             log("🚫 <b>DTS SEQUENCE VIOLATION:</b> Chromium ChunkDemuxer가 거부하는 DTS 역행이 감지되었습니다.", "error")
             for issue in dts_issues:
