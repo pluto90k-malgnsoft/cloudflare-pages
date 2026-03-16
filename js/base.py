@@ -287,25 +287,33 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         # v2.3: DTS 이슈 집계
         dts_issue_count = len(dts_issues)
 
-        # v2.1: Aresample(async=1) 적용 여부 분석
-        avg_audio_gap = 0
-        max_audio_gap = 0
-        avg_dur_mismatch = 0
-        max_dur_mismatch = 0
-        avg_audio_stddev = 0
+        # v2.4: 격자(Grid) 기반 Aresample 판정
+        # aresample=async=1 적용 시 지터가 격자 배수(7.8ms, 15.6ms 등)로 정렬됨
+        grid_ratio = 0.0
+        grid_aligned_count = 0
+        if grid_ms > 0 and jitters:
+            for j in jitters:
+                remainder = j % grid_ms
+                if remainder < 1.5 or (grid_ms - remainder) < 1.5:
+                    grid_aligned_count += 1
+            grid_ratio = grid_aligned_count / len(jitters)
 
-        if all_audio_gaps:
-            avg_audio_gap = sum([abs(g) for g in all_audio_gaps]) / len(all_audio_gaps)
-            max_audio_gap = max([abs(g) for g in all_audio_gaps])
-        if all_dur_mismatches:
-            avg_dur_mismatch = sum([abs(m) for m in all_dur_mismatches]) / len(all_dur_mismatches)
-            max_dur_mismatch = max([abs(m) for m in all_dur_mismatches])
-        if all_audio_stddevs:
-            avg_audio_stddev = sum(all_audio_stddevs) / len(all_audio_stddevs)
+        # GAP 복구력: GAP 발생 후 3개 이내에 격자 패턴으로 복귀하는가
+        gap_recovery_ok = True
+        gap_indices = [idx for idx, row in enumerate(analysis_data) if row['gap']]
+        if gap_indices:
+            for g_idx in gap_indices:
+                recovered = False
+                for check_idx in range(g_idx + 1, min(g_idx + 4, len(analysis_data))):
+                    if check_idx < len(analysis_data) and analysis_data[check_idx].get('consistent'):
+                        recovered = True
+                        break
+                if not recovered and g_idx + 3 < len(analysis_data):
+                    gap_recovery_ok = False
 
-        # Aresample 판정: GAP/역행 제외 후 정상 세그먼트 기준
-        # Audio Gap > 150ms, Duration 편차 > 100ms, StdDev > 10ms (PES 파싱 특성 고려)
-        aresample_missing = (avg_audio_gap > 0.15) or (avg_dur_mismatch > 0.1) or (avg_audio_stddev > 0.01)
+        # Aresample 판정: 격자 비율 70% 이상 = 적용됨
+        aresample_applied = grid_ratio >= 0.7
+        aresample_missing = not aresample_applied
 
         # v2.2: 콘텐츠 경계 통계
         boundary_count = sum(1 for row in analysis_data if row.get('content_boundary'))
@@ -420,12 +428,18 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         dashboard_html += '        <div class="stat-value">' + ('{:.1f}ms'.format(grid_ms) if grid_ms > 0 else "N/A") + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '    <div class="stat-card">'
-        dashboard_html += '        <div class="stat-label">Audio 연속성 Gap</div>'
-        dashboard_html += '        <div class="stat-value">' + ('{:.1f}ms'.format(avg_audio_gap * 1000) if all_audio_gaps else "N/A") + '</div>'
+        dashboard_html += '        <div class="stat-label">격자 정렬률</div>'
+        grid_pct = '{:.0f}%'.format(grid_ratio * 100)
+        grid_pct_color = "var(--success)" if grid_ratio >= 0.7 else "var(--error)"
+        dashboard_html += '        <div class="stat-value" style="color: ' + grid_pct_color + '">' + grid_pct + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '    <div class="stat-card">'
-        dashboard_html += '        <div class="stat-label">Duration 편차</div>'
-        dashboard_html += '        <div class="stat-value">' + ('{:.1f}ms'.format(avg_dur_mismatch * 1000) if all_dur_mismatches else "N/A") + '</div>'
+        dashboard_html += '        <div class="stat-label">GAP 복구력</div>'
+        recovery_text = "양호" if gap_recovery_ok else "미복구"
+        recovery_color = "var(--success)" if gap_recovery_ok else "var(--warning)"
+        if not gap_indices:
+            recovery_text = "GAP 없음"
+        dashboard_html += '        <div class="stat-value" style="color: ' + recovery_color + '">' + recovery_text + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '    <div class="stat-card">'
         dashboard_html += '        <div class="stat-label">Aresample 판정</div>'
@@ -443,7 +457,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v2.3.2)', 'header')
+        log('[*] 분석 상세 결과 (v2.4)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
         table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>A-Gap</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
@@ -520,7 +534,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         log(table_html)
 
         # 스마트 진단 가이드 (v2.0)
-        log("[*] 스마트 진단 보고서 (v2.3.2)", "header")
+        log("[*] 스마트 진단 보고서 (v2.4)", "header")
         if backward_jump_detected:
             log("🚫 <b>FATAL: TIMELINE REVERSAL (재생 불가):</b> 연속 구간 내에서 시간이 과거로 역행하는 치명적인 오류가 포착되었습니다. " + jump_info + " 안드로이드 하드웨어 디코더는 이 지점에서 재생을 중단합니다.", "error")
         elif boundary_count > 0 and not is_oscillating and not large_gap_detected:
@@ -537,28 +551,21 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 대체로 양호합니다. (타임라인 무결성 확보됨)", "info")
 
         # v2.1: Aresample 전용 진단 보고서
-        log("[*] Aresample(async=1) 분석 보고서 (v2.3.2)", "header")
-        if aresample_missing:
-            evidence = []
-            if avg_audio_gap > 0.15:
-                evidence.append("평균 오디오 연속성 Gap: {:.1f}ms (기준: &lt;150ms)".format(avg_audio_gap * 1000))
-            if avg_dur_mismatch > 0.1:
-                evidence.append("평균 Duration 편차: {:.1f}ms (기준: &lt;100ms)".format(avg_dur_mismatch * 1000))
-            if avg_audio_stddev > 0.01:
-                evidence.append("평균 오디오 PTS 간격 편차: {:.3f}ms (기준: &lt;10ms)".format(avg_audio_stddev * 1000))
-            log("🚫 <b>aresample=async=1 미적용 의심:</b> 오디오 타임스탬프 연속성이 확보되지 않았습니다. FFmpeg 인코딩 시 <code>-af aresample=async=1</code> 옵션 적용을 권장합니다.", "error")
-            for ev in evidence:
-                log("  → " + ev, "warning")
-            log("ℹ️ <b>영향:</b> 안드로이드 크롬의 MSE/MediaCodec은 오디오 타임스탬프의 연속성을 엄격히 요구합니다. 이 옵션 없이는 오디오 디코더가 갭/겹침을 처리하지 못해 재생이 중단될 수 있습니다.", "info")
+        log("[*] Aresample(async=1) 분석 보고서 (v2.4)", "header")
+        log("  → 추정 격자(Grid): {:.1f}ms / 격자 정렬률: {:.0f}% ({}/{})".format(grid_ms, grid_ratio * 100, grid_aligned_count, len(jitters) if jitters else 0), "info")
+        if aresample_applied:
+            if has_any_gap and gap_recovery_ok:
+                log("✅ <b>aresample=async=1 적용 확인 (GAP 복구 양호):</b> 중간에 GAP이 감지되었으나, async=1 보정 덕분에 스트림의 규칙성이 확보되었습니다. 안드로이드에서 안정적입니다.", "success")
+            elif has_any_gap and not gap_recovery_ok:
+                log("⚠️ <b>aresample=async=1 적용됨 (GAP 복구 미흡):</b> 격자 패턴이 감지되었으나, GAP 이후 복구가 느립니다.", "warning")
+            else:
+                log("✅ <b>aresample=async=1 적용 확인:</b> 지터의 {:.0f}%가 격자({:.1f}ms) 배수로 정렬되어 있습니다. 안드로이드에서 안정적입니다.".format(grid_ratio * 100, grid_ms), "success")
         else:
-            log("✅ <b>aresample=async=1 적용 확인:</b> 오디오 타임스탬프가 연속적이며 세그먼트 간 정상적인 연결이 확인되었습니다.", "success")
-            if all_audio_gaps:
-                log("  → 평균 오디오 연속성 Gap: {:.1f}ms / 최대: {:.1f}ms".format(avg_audio_gap * 1000, max_audio_gap * 1000), "info")
-            if all_dur_mismatches:
-                log("  → 평균 Duration 편차: {:.1f}ms / 최대: {:.1f}ms".format(avg_dur_mismatch * 1000, max_dur_mismatch * 1000), "info")
+            log("🚫 <b>aresample=async=1 미적용 의심:</b> 격자 정렬률이 {:.0f}%로 기준(70%) 미달입니다. 지터가 불규칙하여 안드로이드 크롬에서 재생 실패 가능성이 높습니다.".format(grid_ratio * 100), "error")
+            log("ℹ️ <b>영향:</b> 안드로이드 크롬의 ChunkDemuxer는 오디오 DTS의 단조 증가를 엄격히 요구합니다. <code>-af aresample=async=1</code> 옵션을 적용하면 격자 패턴이 생성되어 호환성이 보장됩니다.", "info")
 
         # v2.3: DTS Sequence 진단 보고서 (Aresample 연계)
-        log("[*] DTS Sequence 분석 보고서 (v2.3.2)", "header")
+        log("[*] DTS Sequence 분석 보고서 (v2.4)", "header")
         if dts_issues:
             log("🚫 <b>DTS SEQUENCE VIOLATION (PES 레벨):</b> Chromium ChunkDemuxer가 거부하는 DTS 역행이 감지되었습니다.", "error")
             for issue in dts_issues:
