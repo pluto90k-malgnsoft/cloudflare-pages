@@ -197,14 +197,17 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             audio_cont_gap = None
             if last_a_dts_end is not None and a_start is not None:
                 audio_cont_gap = a_start - last_a_dts_end
-                all_audio_gaps.append(audio_cont_gap)
+                # GAP/역행 세그먼트 제외 — 소스 결함과 Aresample 미적용을 분리 판정
+                if not has_gap and abs(audio_cont_gap) < 1.0:
+                    all_audio_gaps.append(audio_cont_gap)
 
             audio_dur_mismatch = None
             if audio_actual_dur > 0 and seg_duration:
                 audio_dur_mismatch = audio_actual_dur - seg_duration
-                all_dur_mismatches.append(audio_dur_mismatch)
+                if not has_gap:
+                    all_dur_mismatches.append(audio_dur_mismatch)
 
-            if audio_pts_stddev > 0:
+            if audio_pts_stddev > 0 and not has_gap:
                 all_audio_stddevs.append(audio_pts_stddev)
 
             # 테이블용 데이터 저장
@@ -258,8 +261,9 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         if all_audio_stddevs:
             avg_audio_stddev = sum(all_audio_stddevs) / len(all_audio_stddevs)
 
-        # Aresample 판정: 평균 오디오 갭 > 50ms 또는 평균 duration 편차 > 30ms → 미적용 의심
-        aresample_missing = (avg_audio_gap > 0.05) or (avg_dur_mismatch > 0.03) or (avg_audio_stddev > 0.002)
+        # Aresample 판정: GAP/역행 제외 후 정상 세그먼트 기준
+        # Audio Gap > 150ms (AAC 프레임 배수 ~23ms×6 허용), Duration 편차 > 100ms, StdDev > 5ms
+        aresample_missing = (avg_audio_gap > 0.15) or (avg_dur_mismatch > 0.1) or (avg_audio_stddev > 0.005)
 
         # v2.0: 타임라인 무결성(Timeline Monotonicity) 체크
         backward_jump_detected = False
@@ -431,9 +435,9 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             # v2.1: Audio Gap / Duration Drift 배지
             a_gap_val = row.get('audio_cont_gap')
             a_gap_str = '{:.1f}ms'.format(a_gap_val * 1000) if a_gap_val is not None else "-"
-            if a_gap_val is not None and abs(a_gap_val) > 0.05:
+            if a_gap_val is not None and abs(a_gap_val) > 0.15:
                 badge += ' <span class="badge" style="background: #7c3aed">AUDIO-GAP</span>'
-            if row.get('audio_dur_mismatch') is not None and abs(row['audio_dur_mismatch']) > 0.03:
+            if row.get('audio_dur_mismatch') is not None and abs(row['audio_dur_mismatch']) > 0.1:
                 badge += ' <span class="badge" style="background: #ea580c">DUR-DRIFT</span>'
 
             table_html += '<tr' + row_style + '><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + a_gap_str + '</td><td>' + badge + '</td></tr>'
@@ -459,12 +463,12 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         log("[*] Aresample(async=1) 분석 보고서 (v2.1)", "header")
         if aresample_missing:
             evidence = []
-            if avg_audio_gap > 0.05:
-                evidence.append("평균 오디오 연속성 Gap: {:.1f}ms (기준: &lt;50ms)".format(avg_audio_gap * 1000))
-            if avg_dur_mismatch > 0.03:
-                evidence.append("평균 Duration 편차: {:.1f}ms (기준: &lt;30ms)".format(avg_dur_mismatch * 1000))
-            if avg_audio_stddev > 0.002:
-                evidence.append("평균 오디오 PTS 간격 편차: {:.3f}ms (기준: &lt;2ms)".format(avg_audio_stddev * 1000))
+            if avg_audio_gap > 0.15:
+                evidence.append("평균 오디오 연속성 Gap: {:.1f}ms (기준: &lt;150ms)".format(avg_audio_gap * 1000))
+            if avg_dur_mismatch > 0.1:
+                evidence.append("평균 Duration 편차: {:.1f}ms (기준: &lt;100ms)".format(avg_dur_mismatch * 1000))
+            if avg_audio_stddev > 0.005:
+                evidence.append("평균 오디오 PTS 간격 편차: {:.3f}ms (기준: &lt;5ms)".format(avg_audio_stddev * 1000))
             log("🚫 <b>aresample=async=1 미적용 의심:</b> 오디오 타임스탬프 연속성이 확보되지 않았습니다. FFmpeg 인코딩 시 <code>-af aresample=async=1</code> 옵션 적용을 권장합니다.", "error")
             for ev in evidence:
                 log("  → " + ev, "warning")
