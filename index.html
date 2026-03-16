@@ -529,10 +529,12 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
         
         if max_offset > 0.1:
             log("  ❗ 결론: 심각한 A/V 싱크 오류 감지. Android Chrome에서 재생 실패 가능성이 매우 높습니다.", "error")
-        elif variance > 0.05:
+        elif variance > 0.1 or max_offset > 0.08:
             log("  ❗ 결론: 싱크가 불안정합니다. FFMPEG aresample=async=1 옵션 적용을 권장합니다.", "warning")
-        elif avg_offset < 0.005:
-            log("  ✅ 결론: A/V 싱크가 매우 안정적입니다.", "success")
+        elif avg_offset < 0.01:
+            log("  ✅ 결론: A/V 싱크가 매우 안정적입니다. (Perfect Match)", "success")
+        elif max_offset < 0.07:
+            log("  ✅ 결론: A/V 싱크가 안정적인 수준입니다. (Android Chrome 안전 구간)", "success")
         else:
             log("  ✅ 결론: 싱크가 일정한 편입니다. (Constant delay)", "success")
     
