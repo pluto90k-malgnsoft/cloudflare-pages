@@ -124,57 +124,35 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             if a_start is not None:
                 log('  Audio PTS: ' + '{:.3f}'.format(a.firstPts) + ' | DTS: ' + '{:.3f}'.format(a.firstDts), 'info')
             
-            # A/V Offset 및 Drift 계산
+            # A/V Offset 및 Gap 확인
+            offset = None
+            has_gap = False
             if v_start is not None and a_start is not None:
                 offset = v_start - a_start
-                offset_ms = offset * 1000
-                drift = 0
-                
-                # 연속성 갭 확인 (0.5초 이상 갭/오버랩이 있으면 Drift 계산 제외)
-                has_gap = False
-                if last_v_dts_end is not None and abs(v_start - last_v_dts_end) > 0.5:
-                    has_gap = True
-                
-                if all_offsets and not has_gap:
-                    drift = abs(offset - all_offsets[-1])
-                
                 all_offsets.append(offset)
                 
+                # 연속성 갭 확인 (0.5초 이상 갭 또는 시간이 뒤로 감)
+                if last_v_dts_end is not None:
+                    v_diff = v_start - last_v_dts_end
+                    if abs(v_diff) > 0.5 or v_diff < -0.1:
+                        has_gap = True
+                
+                offset_ms = offset * 1000
                 sync_status = "✅ Synced"
                 log_type = "success"
                 
                 if abs(offset) >= 0.1:
-                    sync_status = "🚨 CRITICAL (Android Failure Risk)"
+                    sync_status = "🚨 CRITICAL"
                     log_type = "error"
                 elif abs(offset) >= 0.06:
-                    sync_status = "⚠️ Warning (Mobile Skew)"
+                    sync_status = "⚠️ Warning"
                     log_type = "warning"
                 
-                log('  🔗 A/V Offset: ' + '{:.4f}'.format(offset) + 's (' + '{:.1f}'.format(offset_ms) + 'ms) [' + sync_status + ']', log_type)
-                
-                if not has_gap and drift > 0.05:
-                    log('    📉 High Drift detected: ' + '{:.1f}'.format(drift*1000) + 'ms change from prev segment', 'error')
-                elif has_gap:
-                    log('    ℹ️ Continuity Gap detected. Skipping drift analysis for this segment.', 'info')
-                
-                if abs(offset) < 0.001:
-                    log("    💡 FFMPEG -async 1 적용 가능성 높음 (Start aligned)", "info")
-            
-            # 연속성 체크 (Video 기준)
-            if v_start is not None and last_v_dts_end is not None:
-                v_diff = v_start - last_v_dts_end
-                if abs(v_diff) > 0.1:
-                    log('  🎬 Video Gap/Overlap: ' + '{:.3f}'.format(v_diff) + 's', 'error')
-                else:
-                    log('  🎬 Video Continuity: OK (' + '{:.3f}'.format(v_diff) + 's)', 'success')
+                log('  🔗 Offset: ' + '{:.1f}'.format(offset_ms) + 'ms [' + sync_status + ']', log_type)
+                if has_gap:
+                    log('  ⚠️ 불연속성(Gap/Discontinuity) 감지됨!', 'warning')
 
-            # 연속성 체크 (Audio 기준)
-            if a_start is not None and last_a_dts_end is not None:
-                a_diff = a_start - last_a_dts_end
-                if abs(a_diff) > 0.1:
-                    log('  🎵 Audio Gap/Overlap: ' + '{:.3f}'.format(a_diff) + 's', 'error')
-                
-            # 그래프용 캔버스 생성 및 렌더링
+            # 그래프 렌더링
             canvas_id = 'chart-seg-' + str(actual_idx)
             log('<div class="chart-wrapper"><canvas id="' + canvas_id + '"></canvas></div>')
             window.renderSegmentChart(canvas_id, v.samples, a.samples)
@@ -184,7 +162,8 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 "index": actual_idx,
                 "v_start": v_start,
                 "a_start": a_start,
-                "offset": v_start - a_start if v_start is not None and a_start is not None else None
+                "offset": offset,
+                "gap": has_gap
             })
             
             last_v_dts_end = v.lastPts if v.lastPts is not None else v.lastDts
@@ -194,33 +173,33 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         except Exception as e:
             log(f"  [!] 세그먼트 오류: {e}", "error")
 
-    # 요약 레포트 및 테이블 출력
+    # 요약 레포트
     if all_offsets:
         avg_offset = sum(all_offsets) / len(all_offsets)
-        max_offset = max([abs(o) for o in all_offsets])
-        variance = max(all_offsets) - min(all_offsets)
+        max_abs_offset = max([abs(o) for o in all_offsets])
+        offset_range = max(all_offsets) - min(all_offsets) # 편차
         
-        # FFMPEG 옵션(-async 1 / aresample=async=1) 적용 판단
-        # 특징: 모든 세그먼트에서 V/A 시작 지점이 1ms 이하로 일치하거나, Jitter가 거의 없음
-        is_ffmpeg_async = max_offset < 0.002 and variance < 0.001
+        # FFMPEG 옵션 감지 로직 고도화
+        # 1. 절대값이 매우 낮음 (완전 동기화)
+        # 2. 혹은 절대값은 있어도 편차가 매우 낮음 (고정 지연 - async 옵션은 작동 중이나 소스 지연 존재)
+        is_stable = offset_range < 0.01 
+        is_aligned = max_abs_offset < 0.005
         
-        # 대시보드 출력용 변수 사전 준비
         status_label = "정상"
         status_color = "var(--success)"
-        if max_offset > 0.1:
-            status_label = "위험 (재생불가 가능성)"
+        if max_abs_offset > 0.1:
+            status_label = "위험"
             status_color = "var(--error)"
-        elif max_offset > 0.06 or variance > 0.05:
-            status_label = "주의 (싱크 불안정)"
+        elif max_abs_offset > 0.06 or offset_range > 0.05:
+            status_label = "주의"
             status_color = "var(--warning)"
             
         avg_offset_ms = '{:.1f}'.format(avg_offset*1000) + 'ms'
-        ffmpeg_badge = "✅ 적용됨" if is_ffmpeg_async else "❌ 미감지"
-
-        # f-string 대신 문자열 더하기(+) 사용 (IDE 린트 오류 및 파싱 이슈 완전 방지)
+        variance_ms = '{:.1f}'.format(offset_range*1000) + 'ms'
+        
         dashboard_html = '<div class="result-dashboard">'
         dashboard_html += '    <div class="stat-card">'
-        dashboard_html += '        <div class="stat-label">최종 상태</div>'
+        dashboard_html += '        <div class="stat-label">상태</div>'
         dashboard_html += '        <div class="stat-value" style="color: ' + status_color + '">' + status_label + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '    <div class="stat-card">'
@@ -228,29 +207,19 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         dashboard_html += '        <div class="stat-value">' + avg_offset_ms + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '    <div class="stat-card">'
-        dashboard_html += '        <div class="stat-label">FFMPEG 옵션 감지</div>'
-        dashboard_html += '        <div class="stat-value">' + ffmpeg_badge + '</div>'
+        dashboard_html += '        <div class="stat-label">오프셋 편차(Jitter)</div>'
+        dashboard_html += '        <div class="stat-value">' + variance_ms + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '</div>'
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 완료 요약', 'header')
+        log('[*] 분석 상세 결과', 'header')
+        table_html = '<table class="summary-table"><thead><tr>'
+        table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>상태/Gap</th>'
+        table_html += '</tr></thead><tbody>'
         
-        # 상세 데이터 테이블 생성 (트리플 쿼트 대신 안전한 문자열 연결 사용)
-        table_html = '<table class="summary-table">'
-        table_html += '    <thead>'
-        table_html += '        <tr>'
-        table_html += '            <th>#</th>'
-        table_html += '            <th>Video Start (s)</th>'
-        table_html += '            <th>Audio Start (s)</th>'
-        table_html += '            <th>A/V Offset (ms)</th>'
-        table_html += '            <th>상태</th>'
-        table_html += '        </tr>'
-        table_html += '    </thead>'
-        table_html += '    <tbody>'
         for row in analysis_data:
-            idx = row['index']
             v_s = '{:.3f}'.format(row['v_start']) if row['v_start'] is not None else "-"
             a_s = '{:.3f}'.format(row['a_start']) if row['a_start'] is not None else "-"
             off_val = row['offset']
@@ -258,26 +227,30 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             badge = ""
             
             if off_val is not None:
-                off_ms = off_val * 1000
-                off_str = '{:.1f}'.format(off_ms) + 'ms'
-                if abs(off_val) < 0.01: badge = '<span class="badge badge-success">Synced</span>'
-                elif abs(off_val) < 0.06: badge = '<span class="badge badge-warning">Small Skew</span>'
+                off_str = '{:.1f}ms'.format(off_val * 1000)
+                if abs(off_val) < 0.02: badge = '<span class="badge badge-success">Synced</span>'
+                elif abs(off_val) < 0.06: badge = '<span class="badge badge-warning">Skew</span>'
                 else: badge = '<span class="badge badge-error">Critical</span>'
             
-            table_html += '                <tr>'
-            table_html += '                    <td>' + str(idx) + '</td>'
-            table_html += '                    <td>' + v_s + '</td>'
-            table_html += '                    <td>' + a_s + '</td>'
-            table_html += '                    <td>' + off_str + '</td>'
-            table_html += '                    <td>' + badge + '</td>'
-            table_html += '                </tr>'
+            if row['gap']:
+                badge += ' <span class="badge" style="background: #f43f5e">GAP</span>'
+            
+            table_html += '<tr><td>' + str(row['index']) + '</td><td>' + v_s + '</td><td>' + a_s + '</td><td>' + off_str + '</td><td>' + badge + '</td></tr>'
         table_html += "</tbody></table>"
         log(table_html)
 
-        # 팁 추가
-        if is_ffmpeg_async:
-            log("💡 <b>진단 결과:</b> FFMPEG의 오디오 동기화 옵션이 정상적으로 작동하고 있는 것으로 보입니다. 비디오와 오디오의 시작점이 매칭되어 있습니다.", "success")
-        elif max_offset > 0.06:
-            log("💡 <b>권장 작업:</b> 현재 싱크 차이가 큽니다. FFMPEG 사용 시 <code>-async 1</code> 또는 <code>aresample=async=1</code> 옵션을 추가하여 오디오 시작점을 비디오에 맞추는 것을 권장합니다.", "warning")
+        # 스마트 진단 가이드
+        log("[*] 스마트 진단 보고서 (v1.3)", "header")
+        if is_aligned:
+            log("✅ <b>분석 결과:</b> 비디오와 오디오가 완벽하게 동기화되어 있습니다. FFmpeg 옵션이 최적으로 작동 중입니다.", "success")
+        elif is_stable:
+            log("ℹ️ <b>분석 결과 (고정 오프셋):</b> 오프셋이 약 " + avg_offset_ms + "로 일정하게 유지되고 있습니다. 이는 FFmpeg 옵션은 작동 중이나, 소스 단계의 초기 지연(Encoder Latency)이 포함된 상태입니다. 실감상에는 문제가 없을 가능성이 높습니다.", "info")
+        else:
+            log("⚠️ <b>분석 결과 (가변 드리프트):</b> 오프셋이 일정하지 않고 변동(편차 " + variance_ms + ")이 큽니다. FFmpeg에서 <code>-async 1</code> 또는 <code>aresample=async=1</code> 옵션이 누락되었거나, 소스 자체의 타임스탬프가 불안정할 수 있습니다.", "warning")
+            
+        if any(row['gap'] for row in analysis_data):
+            log("🚨 <b>주의:</b> 스트림 중간에 타임스탬프 불연속성(Gap)이 발견되었습니다. 이는 소스 파일의 끊김이나 잘못된 세그먼팅으로 인해 발생하며, FFmpeg 옵션만으로는 해결되지 않을 수 있습니다.", "error")
+
+    log("[*] 모든 분석 완료", "header")
 
     log("[*] 모든 분석 완료", "header")
