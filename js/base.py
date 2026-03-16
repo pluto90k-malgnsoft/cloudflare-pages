@@ -117,10 +117,10 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             r = await fetch_with_proxy(seg.absolute_uri, proxy_prefix)
             data = await r.bytes()
             ts_info = await window.parseSegmentTimestamps(Uint8Array.new(data).buffer)
-            
+
             v = ts_info.video
             a = ts_info.audio
-            
+
             v_start = v.firstPts if v.firstPts is not None else v.firstDts
             a_start = a.firstPts if a.firstPts is not None else a.firstDts
 
@@ -132,15 +132,19 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             # A/V Offset 및 Gap 확인
             offset = None
             has_gap = False
+            is_content_boundary = False  # v2.2: PTS 역행 동반 GAP = 콘텐츠 전환점
             raw_diff = 0
             if v_start is not None and a_start is not None:
                 offset = v_start - a_start
-                
+
                 # 연속성 갭 확인 (0.5초 이상 갭 또는 시간 역전)
                 if last_v_dts_end is not None:
                     v_diff = v_start - last_v_dts_end
                     if abs(v_diff) > 0.5 or v_diff < -0.1:
                         has_gap = True
+                    # v2.2: PTS가 과거로 돌아가는 GAP은 콘텐츠 경계 (편집/연결점)
+                    if v_diff < -0.1:
+                        is_content_boundary = True
                 
                 # 변화량(Raw Diff) 계산
                 if all_offsets:
@@ -186,7 +190,10 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 diff_str = ' (Diff: {:.1f}ms'.format(raw_diff * 1000) + recovery_info + ')' if raw_diff != 0 else ""
                 log('  🔗 Offset: ' + '{:.1f}'.format(offset_ms) + 'ms' + diff_str + ' [' + sync_status + ']', log_type)
                 if has_gap:
-                    log('  ℹ️ Discontinuity(Gap) 발생. 복구 패턴을 감시합니다.', 'info')
+                    if is_content_boundary:
+                        log('  ℹ️ 콘텐츠 경계(PTS 전환) 감지. 편집/연결 지점으로 판단됩니다.', 'info')
+                    else:
+                        log('  ℹ️ Discontinuity(Gap) 발생. 복구 패턴을 감시합니다.', 'info')
 
             # 그래프 렌더링
             canvas_id = 'chart-seg-' + str(actual_idx)
@@ -219,6 +226,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 "raw_diff": raw_diff,
                 "consistent": is_consistent,
                 "gap": has_gap,
+                "content_boundary": is_content_boundary,
                 "audio_cont_gap": audio_cont_gap,
                 "audio_dur_mismatch": audio_dur_mismatch,
                 "audio_pts_stddev": audio_pts_stddev
@@ -262,28 +270,35 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             avg_audio_stddev = sum(all_audio_stddevs) / len(all_audio_stddevs)
 
         # Aresample 판정: GAP/역행 제외 후 정상 세그먼트 기준
-        # Audio Gap > 150ms (AAC 프레임 배수 ~23ms×6 허용), Duration 편차 > 100ms, StdDev > 5ms
-        aresample_missing = (avg_audio_gap > 0.15) or (avg_dur_mismatch > 0.1) or (avg_audio_stddev > 0.005)
+        # Audio Gap > 150ms, Duration 편차 > 100ms, StdDev > 10ms (PES 파싱 특성 고려)
+        aresample_missing = (avg_audio_gap > 0.15) or (avg_dur_mismatch > 0.1) or (avg_audio_stddev > 0.01)
+
+        # v2.2: 콘텐츠 경계 통계
+        boundary_count = sum(1 for row in analysis_data if row.get('content_boundary'))
 
         # v2.0: 타임라인 무결성(Timeline Monotonicity) 체크
         backward_jump_detected = False
         large_gap_detected = False
         jump_info = ""
-        
+
         for j in range(1, len(analysis_data)):
             curr = analysis_data[j]
             prev = analysis_data[j-1]
-            
+
+            # v2.2: 콘텐츠 경계(PTS 역행 GAP)는 편집/연결점이므로 역행 판정에서 제외
+            if curr.get('content_boundary') or curr.get('gap'):
+                continue
+
             # 1. Backward Jump 감지 (Monotonicity Check)
             v_diff = curr['v_start'] - prev['v_start']
             a_diff = curr['a_start'] - prev['a_start']
-            
+
             # v2.0: 시간 역행 임계값 (0.1s 이상 과거로 갈 때 치명적으로 간주)
             if v_diff < -0.1 or a_diff < -0.1:
                 backward_jump_detected = True
                 jump_info = f"#{prev['index']} -> #{curr['index']} 지점에서 시간 역행 감지 ({prev['v_start']:.3f}s -> {curr['v_start']:.3f}s)"
                 break
-                
+
             # 2. Qualitative GAP Analysis (10초 이상의 거대 GAP)
             if curr['gap']:
                 # 이전 데이터와의 간격이 10초를 넘으면 심각한 결함으로 간주
@@ -330,6 +345,9 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         if backward_jump_detected:
             status_label = "재생 불가 (역행)"
             status_color = "var(--error)"
+        elif boundary_count > 0 and not is_oscillating and not large_gap_detected and not aresample_missing:
+            status_label = "정상 (Discontinuity " + str(boundary_count) + "개)"
+            status_color = "var(--success)"
         elif is_oscillating:
             status_label = "위험 (진동)"
             status_color = "var(--error)"
@@ -382,7 +400,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v2.1.1)', 'header')
+        log('[*] 분석 상세 결과 (v2.2)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
         table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>A-Gap</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
@@ -394,14 +412,16 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             jit_str = '{:.1f}ms'.format(jit_val * 1000) if jit_val > 0 else "-"
             badge = ""
             
-            # v2.0: 타임라인 무결성 위반 시 시각적 표시
+            # v2.2: 콘텐츠 경계 vs 진짜 역행 구분
             is_backward = False
-            if idx > 0:
+            is_boundary = row.get('content_boundary', False)
+            if idx > 0 and not is_boundary:
                 if row['v_start'] < analysis_data[idx-1]['v_start'] - 0.1:
                     is_backward = True
 
             if off_val is not None:
-                if is_backward: badge = '<span class="badge badge-error">TIME-REVERSE</span>'
+                if is_boundary: badge = '<span class="badge" style="background: #0891b2">DISC</span>'
+                elif is_backward: badge = '<span class="badge badge-error">TIME-REVERSE</span>'
                 elif row['consistent']: badge = '<span class="badge badge-success">Consistent</span>'
                 elif abs(off_val) < 0.05: badge = '<span class="badge badge-success">Synced</span>'
                 elif abs(off_val) < 0.15: badge = '<span class="badge badge-warning">Skew</span>'
@@ -430,14 +450,18 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                             if not was_near_gap:
                                 badge += ' <span class="badge" style="background: #f43f5e">ZCR-ZIG</span>'
             
-            # 행 스타일 추가 (타임라인 위반 시 강조)
-            row_style = ' style="background: rgba(244, 63, 94, 0.1)"' if is_backward else ""
+            # 행 스타일 추가 (콘텐츠 경계: 파란 배경, 역행: 빨간 배경)
+            row_style = ""
+            if is_backward:
+                row_style = ' style="background: rgba(244, 63, 94, 0.1)"'
+            elif is_boundary:
+                row_style = ' style="background: rgba(8, 145, 178, 0.08)"'
             # v2.1: Audio Gap / Duration Drift 배지
             a_gap_val = row.get('audio_cont_gap')
             a_gap_str = '{:.1f}ms'.format(a_gap_val * 1000) if a_gap_val is not None else "-"
-            if a_gap_val is not None and abs(a_gap_val) > 0.15:
+            if a_gap_val is not None and abs(a_gap_val) > 0.15 and not row.get('gap'):
                 badge += ' <span class="badge" style="background: #7c3aed">AUDIO-GAP</span>'
-            if row.get('audio_dur_mismatch') is not None and abs(row['audio_dur_mismatch']) > 0.1:
+            if row.get('audio_dur_mismatch') is not None and abs(row['audio_dur_mismatch']) > 0.1 and not row.get('gap'):
                 badge += ' <span class="badge" style="background: #ea580c">DUR-DRIFT</span>'
 
             table_html += '<tr' + row_style + '><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + a_gap_str + '</td><td>' + badge + '</td></tr>'
@@ -445,9 +469,11 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         log(table_html)
 
         # 스마트 진단 가이드 (v2.0)
-        log("[*] 스마트 진단 보고서 (v2.1.1)", "header")
+        log("[*] 스마트 진단 보고서 (v2.2)", "header")
         if backward_jump_detected:
-            log("🚫 <b>FATAL: TIMELINE REVERSAL (재생 불가):</b> 시간이 과거로 역행하는 치명적인 오류가 포착되었습니다. " + jump_info + " 안드로이드 하드웨어 디코더는 이 지점에서 재생을 중단합니다. 소스 머징(Merging) 과정의 결함이 의심됩니다.", "error")
+            log("🚫 <b>FATAL: TIMELINE REVERSAL (재생 불가):</b> 연속 구간 내에서 시간이 과거로 역행하는 치명적인 오류가 포착되었습니다. " + jump_info + " 안드로이드 하드웨어 디코더는 이 지점에서 재생을 중단합니다.", "error")
+        elif boundary_count > 0 and not is_oscillating and not large_gap_detected:
+            log("ℹ️ <b>콘텐츠 경계 감지 (" + str(boundary_count) + "개):</b> PTS 전환점(편집/연결 지점)이 감지되었습니다. 연속 구간 내의 타임라인은 정상입니다.", "info")
         elif large_gap_detected:
             log("🚫 <b>FATAL: HUGE GAP (인코딩 결함):</b> 10초 이상의 거대한 시간 공백이 발견되었습니다. 단순 네트워크 지연이 아닌 소스 레벨의 데이터 누락으로 간주됩니다.", "error")
         elif has_any_gap and is_grid_stable:
@@ -460,15 +486,15 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 대체로 양호합니다. (타임라인 무결성 확보됨)", "info")
 
         # v2.1: Aresample 전용 진단 보고서
-        log("[*] Aresample(async=1) 분석 보고서 (v2.1.1)", "header")
+        log("[*] Aresample(async=1) 분석 보고서 (v2.2)", "header")
         if aresample_missing:
             evidence = []
             if avg_audio_gap > 0.15:
                 evidence.append("평균 오디오 연속성 Gap: {:.1f}ms (기준: &lt;150ms)".format(avg_audio_gap * 1000))
             if avg_dur_mismatch > 0.1:
                 evidence.append("평균 Duration 편차: {:.1f}ms (기준: &lt;100ms)".format(avg_dur_mismatch * 1000))
-            if avg_audio_stddev > 0.005:
-                evidence.append("평균 오디오 PTS 간격 편차: {:.3f}ms (기준: &lt;5ms)".format(avg_audio_stddev * 1000))
+            if avg_audio_stddev > 0.01:
+                evidence.append("평균 오디오 PTS 간격 편차: {:.3f}ms (기준: &lt;10ms)".format(avg_audio_stddev * 1000))
             log("🚫 <b>aresample=async=1 미적용 의심:</b> 오디오 타임스탬프 연속성이 확보되지 않았습니다. FFmpeg 인코딩 시 <code>-af aresample=async=1</code> 옵션 적용을 권장합니다.", "error")
             for ev in evidence:
                 log("  → " + ev, "warning")
