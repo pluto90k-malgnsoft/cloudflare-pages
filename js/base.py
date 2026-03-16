@@ -217,32 +217,49 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             counts = Counter(jitters)
             grid_ms, _ = counts.most_common(1)[0]
         
-        # v1.8: 영점 교차율(Zero-crossing Rate) 및 진동 분석
+        # v1.9: 영점 교차율(Zero-crossing Rate) 및 진동 분석 (GAP 면역 체계 도입)
         zcr_count = 0
         fatal_osc_count = 0
         amplitudes_at_cross = []
+        recovery_segments_window = 3 # GAP 이후 면역(제외)할 세그먼트 수
+        gap_indices = [idx for idx, row in enumerate(analysis_data) if row['gap']]
         
         if len(all_offsets) >= 2:
             for j in range(1, len(all_offsets)):
+                # GAP 면역 체크: 현재 세그먼트 혹은 직전 3개 이내에 GAP이 있었다면 ZCR 분석 제외
+                is_in_recovery = False
+                for g_idx in gap_indices:
+                    if 0 <= (j - g_idx) <= recovery_segments_window:
+                        is_in_recovery = True
+                        break
+                
+                if is_in_recovery:
+                    continue
+                    
                 # 부호 전환 감지 (+ -> - 또는 - -> +)
                 if all_offsets[j] * all_offsets[j-1] < 0:
                     zcr_count += 1
-                    # 교차 지점에서의 진폭(현재 세그먼트와 이전 세그먼트 오프셋의 거리)
+                    # 교차 지점에서의 진폭
                     amp = abs(all_offsets[j] - all_offsets[j-1])
                     amplitudes_at_cross.append(amp)
-                    # 교차 시 진폭이 30ms 이상이고 불규칙적이면 Fatal로 간주
+                    # 교차 시 진폭이 30ms 이상이고 불규칙적이면 Fatal로 간주 (면역 기간 제외)
                     if amp > 0.03:
                         fatal_osc_count += 1
         
-        # 진단 엔진 v1.8 판정 로직
+        # 진단 엔진 v1.9 판정 로직
         is_oscillating = fatal_osc_count >= 2
         is_grid_stable = not is_oscillating and len(all_raw_diffs) >= 3
+        has_any_gap = len(gap_indices) > 0
         
         status_label = "정상"
         status_color = "var(--success)"
+        
         if is_oscillating:
             status_label = "위험 (진동)"
             status_color = "var(--error)"
+        elif has_any_gap and is_grid_stable:
+            status_label = "정상 (복구됨)"
+            status_color = "var(--success)"
         elif max_abs_offset > 0.3:
             status_label = "위험 (거대 오차)"
             status_color = "var(--error)"
@@ -269,12 +286,12 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v1.8)', 'header')
+        log('[*] 분석 상세 결과 (v1.9)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
         table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
         
-        for row in analysis_data:
+        for idx, row in enumerate(analysis_data):
             off_val = row['offset']
             off_str = '{:.1f}ms'.format(off_val * 1000) if off_val is not None else "-"
             jit_val = abs(row['raw_diff'])
@@ -290,28 +307,35 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             if row['gap']:
                 badge += ' <span class="badge" style="background: #64748b">GAP</span>'
             elif row['raw_diff'] != 0:
-                # ZCR 기반의 진동 표시
+                # v1.9: GAP 면역 기간(3개 세그먼트)에는 ZCR-ZIG 미표시
                 idx_in_data = row['index'] - start_index
                 if idx_in_data > 0:
                     curr_off = row['offset']
                     prev_off = analysis_data[idx_in_data-1]['offset']
                     if curr_off is not None and prev_off is not None:
                         if curr_off * prev_off < 0 and abs(curr_off - prev_off) > 0.03:
-                            badge += ' <span class="badge" style="background: #f43f5e">ZCR-ZIG</span>'
+                            # 최근 3개 이내에 GAP이 없었을 때만 배지 표시
+                            was_near_gap = False
+                            for g_idx in gap_indices:
+                                if 0 <= (idx - g_idx) <= recovery_segments_window:
+                                    was_near_gap = True
+                                    break
+                            if not was_near_gap:
+                                badge += ' <span class="badge" style="background: #f43f5e">ZCR-ZIG</span>'
             
             table_html += '<tr><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + badge + '</td></tr>'
         table_html += "</tbody></table>"
         log(table_html)
 
-        # 스마트 진단 가이드 (v1.8)
-        log("[*] 스마트 진단 보고서 (v1.8)", "header")
-        if is_grid_stable:
-            log("✅ <b>STABLE GRID (정상):</b> 오차가 존재하나 동적 격자({:.1f}ms) 기반의 보정 패턴이 매우 안정적입니다. 안드로이드 크롬에서 완벽하게 재생 가능합니다.".format(grid_ms), "success")
+        # 스마트 진단 가이드 (v1.9)
+        log("[*] 스마트 진단 보고서 (v1.9)", "header")
+        if has_any_gap and is_grid_stable:
+            log("✅ <b>STABLE AFTER GAP (정상):</b> 불연속(GAP)이 발생했으나 이후 스트림이 매우 안정적으로 회복되었습니다. 안드로이드 크롬에서 정상 재생 가능합니다.", "success")
+        elif is_grid_stable:
+            log("✅ <b>STABLE GRID (정상):</b> 동적 격자({:.1f}ms) 기반의 보정 패턴이 매우 안정적입니다. 정상 재생 가능합니다.".format(grid_ms), "success")
         elif is_oscillating:
-            log("🚫 <b>FATAL OSCILLATION (위험):</b> 부호 전환 시 진폭이 크고 불규칙한 진동이 감지되었습니다(ZCR 감지). 이는 하드웨어 디코더 버퍼를 교란하는 핵심 원인입니다. (-async 1 필수)", "error")
-        elif max_abs_offset > 0.25:
-            log("⚠️ <b>LARGE DELAY (주의):</b> 격자 패턴은 보이나 기본적인 오프셋이 너무 큽니다. 시청 경험에 지장이 있을 수 있습니다.", "warning")
+            log("🚫 <b>FATAL OSCILLATION (위험):</b> 연속 비트스트림 내에서 제어가 불가능한 진동이 감지되었습니다. 버퍼 결함을 유발하는 핵심 요인입니다.", "error")
         else:
-            log("ℹ️ <b>분석 완료:</b> 스트림이 대체로 양호합니다.", "info")
+            log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 대체로 양호합니다. (GAP 회복 구간 면역 적용됨)", "info")
 
     log("[*] 모든 분석 완료", "header")
