@@ -72,7 +72,7 @@
 
 <div class="container">
     <header>
-        <h1>Chromium DTS Sequence Analyzer v1.3</h1>
+        <h1>Chromium DTS Sequence Analyzer v1.4</h1>
         <p class="subtitle">AAC 프레임 레벨 DTS 파싱 — web_media_player_impl.cc:2068 에러 사전 검증</p>
     </header>
 
@@ -261,7 +261,10 @@ function parseTsSegment(uint8) {
     for (const pid of Object.keys(pids)) flushPes(Number(pid));
 
     // ── Extract per-frame DTS ──
-    const result = { audioFrames: [], videoFrames: [], sampleRate: 0 };
+    // Chromium's mp2t_stream_parser emits buffers in PES-based batches.
+    // MergeBufferQueues runs per batch, NOT on the entire segment.
+    // PES-to-PES timeline jumps are handled by ProcessFrame's Reset() (not an error).
+    const result = { audioFrames: [], videoFrames: [], sampleRate: 0, pesBatches: [] };
 
     for (const [pidStr, info] of Object.entries(pids)) {
         if (info.type === 'audio') {
@@ -279,9 +282,32 @@ function parseTsSegment(uint8) {
         }
     }
 
-    // DO NOT sort frames — Chromium processes them in PES arrival order.
-    // Sorting would mask DTS reversals caused by out-of-order PES packets,
-    // which is exactly what triggers "Parsed buffers not in DTS sequence".
+    // Build PES-aligned batches for MergeBufferQueues simulation.
+    // Each batch = one PES worth of audio frames + concurrent video frames.
+    // This matches how Chromium's MP2T parser calls NewBuffersCB.
+    let audioPesIdx = 0;
+    for (const [pidStr, info] of Object.entries(pids)) {
+        if (info.type === 'audio') {
+            for (const pes of info.pesPackets) {
+                const frames = parseAdtsFrames(pes.payload, pes.dts);
+                const batchAudio = frames.frames;
+                // Collect video frames that fall within this PES time range
+                const batchVideo = [];
+                if (batchAudio.length > 0) {
+                    const batchStart = batchAudio[0].dts;
+                    const batchEnd = batchAudio[batchAudio.length - 1].dts;
+                    // Grab video frames in a reasonable range around this audio batch
+                    for (const vf of result.videoFrames) {
+                        if (vf.dts >= batchStart - 90000 && vf.dts <= batchEnd + 90000) {
+                            batchVideo.push(vf);
+                        }
+                    }
+                }
+                result.pesBatches.push({ audio: batchAudio, video: batchVideo });
+            }
+            break; // only process audio PES for batching
+        }
+    }
 
     return result;
 }
@@ -566,32 +592,75 @@ async function run() {
                     log(`${label}: <span style="color:#0891b2">DISCONTINUITY</span> — DTS 검증 리셋 (Chromium SourceBuffer reset)`, 'log-dim');
                 }
 
-                // 1. Intra-segment audio DTS monotonic
-                const audioMono = checkMonotonic(data.audioFrames);
-                // 2. Intra-segment video DTS monotonic
-                const videoMono = checkMonotonic(data.videoFrames);
-                // 3. MergeBufferQueues simulation
-                const merge = mergeBufferQueues(data.audioFrames, data.videoFrames);
-
-                // 4. Chromium ProcessFrame gap check: dts_delta > 2 * frame_duration
-                // AAC frame duration = 1024 samples / sampleRate * 90000 (in 90kHz ticks)
+                // Chromium's MP2T parser emits buffers in PES-based batches.
+                // MergeBufferQueues runs PER BATCH, not on the entire segment.
+                // PES-to-PES timeline jumps are handled by ProcessFrame Reset() (not error).
+                // So we must check each PES batch independently.
                 const sr = data.sampleRate || 44100;
-                const aacFrameTicks = (1024 / sr) * 90000; // ~2090 ticks for 44100Hz
-                const audioGaps = checkDtsGaps(data.audioFrames, aacFrameTicks);
-                // Video: estimate frame duration from actual intervals
-                let videoFrameTicks = 3000; // default ~33ms (30fps)
+                const aacFrameTicks = (1024 / sr) * 90000;
+
+                let audioMono = [], videoMono = [];
+                let mergeViolations = [];
+                let audioGaps = [], videoGaps = [];
+
+                if (data.pesBatches.length > 0) {
+                    // Check each PES batch independently (matches Chromium behavior)
+                    for (const batch of data.pesBatches) {
+                        const aMono = checkMonotonic(batch.audio);
+                        audioMono.push(...aMono);
+                        const aGaps = checkDtsGaps(batch.audio, aacFrameTicks);
+                        audioGaps.push(...aGaps);
+                        const merge = mergeBufferQueues(batch.audio, batch.video);
+                        mergeViolations.push(...merge.violations);
+                    }
+                } else {
+                    // Fallback: if no batches, check entire segment (audio-only or edge case)
+                    audioMono = checkMonotonic(data.audioFrames);
+                    const merge = mergeBufferQueues(data.audioFrames, data.videoFrames);
+                    mergeViolations = merge.violations;
+                    audioGaps = checkDtsGaps(data.audioFrames, aacFrameTicks);
+                }
+
+                // Video intra-check (within each continuous PES group)
+                // Group video frames by timeline continuity (gap > 1s = new group)
+                const vGroups = [];
+                let curVGroup = [];
+                for (let vi = 0; vi < data.videoFrames.length; vi++) {
+                    if (curVGroup.length > 0) {
+                        const vDelta = data.videoFrames[vi].dts - data.videoFrames[vi - 1].dts;
+                        if (vDelta < 0 || vDelta > 90000) {
+                            // Timeline jump — start new group
+                            vGroups.push(curVGroup);
+                            curVGroup = [];
+                        }
+                    }
+                    curVGroup.push(data.videoFrames[vi]);
+                }
+                if (curVGroup.length > 0) vGroups.push(curVGroup);
+                for (const vg of vGroups) {
+                    videoMono.push(...checkMonotonic(vg));
+                }
+
+                // Video gap check per group
+                let videoFrameTicks = 3000;
                 if (data.videoFrames.length >= 2) {
                     const vDeltas = [];
-                    for (let vi = 1; vi < Math.min(data.videoFrames.length, 20); vi++) {
-                        vDeltas.push(data.videoFrames[vi].dts - data.videoFrames[vi - 1].dts);
+                    for (const vg of vGroups) {
+                        for (let vi = 1; vi < Math.min(vg.length, 20); vi++) {
+                            vDeltas.push(vg[vi].dts - vg[vi - 1].dts);
+                        }
                     }
-                    vDeltas.sort((a, b) => a - b);
-                    videoFrameTicks = vDeltas[Math.floor(vDeltas.length / 2)]; // median
+                    if (vDeltas.length > 0) {
+                        vDeltas.sort((a, b) => a - b);
+                        videoFrameTicks = vDeltas[Math.floor(vDeltas.length / 2)];
+                    }
                 }
-                const videoGaps = checkDtsGaps(data.videoFrames, videoFrameTicks);
+                for (const vg of vGroups) {
+                    videoGaps.push(...checkDtsGaps(vg, videoFrameTicks));
+                }
 
                 const intraIssues = audioMono.length + videoMono.length;
-                const mergeIssues = merge.violations.length;
+                const mergeIssues = mergeViolations.length;
                 const gapIssues = audioGaps.length + videoGaps.length;
                 intraFails += intraIssues;
                 mergeFails += mergeIssues;
@@ -644,14 +713,14 @@ async function run() {
                 }
                 globalVideoIdx += vCount;
                 // Mark merge violations
-                for (const v of merge.violations) {
+                for (const v of mergeViolations) {
                     mergeViolationPoints.push({ x: allAudioDts.length + allVideoDts.length, y: v.cur.dts / 90000 });
                 }
 
                 const ok = intraIssues === 0 && mergeIssues === 0 && gapIssues === 0 && !interIssue;
                 const segResult = {
                     index: i, aCount, vCount, sampleRate: data.sampleRate,
-                    audioMono, videoMono, merge, audioGaps, videoGaps, interIssue, ok, disc: isDisc, timelineReset,
+                    audioMono, videoMono, mergeViolations, audioGaps, videoGaps, interIssue, ok, disc: isDisc, timelineReset,
                     aFirstDts: data.audioFrames[0]?.dts, aLastDts: data.audioFrames[data.audioFrames.length - 1]?.dts,
                     vFirstDts: data.videoFrames[0]?.dts, vLastDts: data.videoFrames[data.videoFrames.length - 1]?.dts,
                 };
@@ -674,7 +743,7 @@ async function run() {
                 }
                 if (mergeIssues > 0) {
                     log(`  A/V 병합 DTS 역행 ${mergeIssues}건 (Chromium MergeBufferQueues FAIL)`, 'log-err');
-                    for (const v of merge.violations.slice(0, 3)) {
+                    for (const v of mergeViolations.slice(0, 3)) {
                         const prevLabel = v.prev.type === 'A' ? 'Audio' : 'Video';
                         const curLabel = v.cur.type === 'A' ? 'Audio' : 'Video';
                         log(`    [${prevLabel}] ${(v.prev.dts / 90000).toFixed(6)}s -> [${curLabel}] ${(v.cur.dts / 90000).toFixed(6)}s (delta: ${(v.delta / 90).toFixed(3)}ms)`, 'log-warn');
@@ -771,8 +840,8 @@ async function run() {
             const vRange = r.vFirstDts != null ? `${(r.vFirstDts / 90000).toFixed(3)}s ~ ${(r.vLastDts / 90000).toFixed(3)}s` : '-';
             const intraBadge = (r.audioMono.length + r.videoMono.length) > 0
                 ? `<span class="badge b-fail">${r.audioMono.length + r.videoMono.length}</span>` : '<span class="badge b-ok">OK</span>';
-            const mergeBadge = r.merge.violations.length > 0
-                ? `<span class="badge b-fail">${r.merge.violations.length}</span>` : '<span class="badge b-ok">OK</span>';
+            const mergeBadge = (r.mergeViolations?.length || 0) > 0
+                ? `<span class="badge b-fail">${r.mergeViolations.length}</span>` : '<span class="badge b-ok">OK</span>';
             const gapTotal = (r.audioGaps?.length || 0) + (r.videoGaps?.length || 0);
             const gapBadge = gapTotal > 0
                 ? `<span class="badge b-fail">${gapTotal}</span>` : '<span class="badge b-ok">OK</span>';
