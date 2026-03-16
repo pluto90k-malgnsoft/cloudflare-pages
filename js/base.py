@@ -100,6 +100,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
     last_v_dts_end = None
     last_a_dts_end = None
     all_offsets = []
+    all_jitters = [] # 세그먼트 간 오프셋 변화량
     analysis_data = [] # 테이블용 데이터 수집
     
     for i in range(count):
@@ -127,8 +128,15 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             # A/V Offset 및 Gap 확인
             offset = None
             has_gap = False
+            jitter = 0
             if v_start is not None and a_start is not None:
                 offset = v_start - a_start
+                
+                # 지터(Jitter) 계산: 이전 세그먼트 오프셋과의 차이
+                if all_offsets:
+                    jitter = abs(offset - all_offsets[-1])
+                    all_jitters.append(jitter)
+                
                 all_offsets.append(offset)
                 
                 # 연속성 갭 확인 (0.5초 이상 갭 또는 시간이 뒤로 감)
@@ -144,11 +152,12 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 if abs(offset) >= 0.1:
                     sync_status = "🚨 CRITICAL"
                     log_type = "error"
-                elif abs(offset) >= 0.06:
+                elif abs(offset) >= 0.06 or jitter > 0.02:
                     sync_status = "⚠️ Warning"
                     log_type = "warning"
                 
-                log('  🔗 Offset: ' + '{:.1f}'.format(offset_ms) + 'ms [' + sync_status + ']', log_type)
+                jitter_str = ' (Jitter: {:.1f}ms)'.format(jitter * 1000) if jitter > 0 else ""
+                log('  🔗 Offset: ' + '{:.1f}'.format(offset_ms) + 'ms' + jitter_str + ' [' + sync_status + ']', log_type)
                 if has_gap:
                     log('  ⚠️ 불연속성(Gap/Discontinuity) 감지됨!', 'warning')
 
@@ -163,6 +172,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 "v_start": v_start,
                 "a_start": a_start,
                 "offset": offset,
+                "jitter": jitter,
                 "gap": has_gap
             })
             
@@ -177,17 +187,17 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
     if all_offsets:
         avg_offset = sum(all_offsets) / len(all_offsets)
         max_abs_offset = max([abs(o) for o in all_offsets])
-        offset_range = max(all_offsets) - min(all_offsets) # 편차
+        offset_range = max(all_offsets) - min(all_offsets) # 편차 (Variance)
+        max_jitter = max(all_jitters) if all_jitters else 0
         
-        # FFMPEG 옵션 감지 로직 고도화
-        # 1. 절대값이 매우 낮음 (완전 동기화)
-        # 2. 혹은 절대값은 있어도 편차가 매우 낮음 (고정 지연 - async 옵션은 작동 중이나 소스 지연 존재)
-        is_stable = offset_range < 0.01 
+        # 진단 임계값
+        is_stable = offset_range < 0.015 and max_jitter < 0.01
+        is_jagged = max_jitter > 0.02 # 세그먼트 간 오프셋이 20ms 이상 출렁임
         is_aligned = max_abs_offset < 0.005
         
         status_label = "정상"
         status_color = "var(--success)"
-        if max_abs_offset > 0.1:
+        if max_abs_offset > 0.1 or is_jagged:
             status_label = "위험"
             status_color = "var(--error)"
         elif max_abs_offset > 0.06 or offset_range > 0.05:
@@ -195,7 +205,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             status_color = "var(--warning)"
             
         avg_offset_ms = '{:.1f}'.format(avg_offset*1000) + 'ms'
-        variance_ms = '{:.1f}'.format(offset_range*1000) + 'ms'
+        max_jitter_ms = '{:.1f}'.format(max_jitter*1000) + 'ms'
         
         dashboard_html = '<div class="result-dashboard">'
         dashboard_html += '    <div class="stat-card">'
@@ -207,16 +217,16 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         dashboard_html += '        <div class="stat-value">' + avg_offset_ms + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '    <div class="stat-card">'
-        dashboard_html += '        <div class="stat-label">오프셋 편차(Jitter)</div>'
-        dashboard_html += '        <div class="stat-value">' + variance_ms + '</div>'
+        dashboard_html += '        <div class="stat-label">최대 지터(Jitter)</div>'
+        dashboard_html += '        <div class="stat-value">' + max_jitter_ms + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '</div>'
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과', 'header')
+        log('[*] 분석 상세 결과 (v1.4)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
-        table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>상태/Gap</th>'
+        table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
         
         for row in analysis_data:
@@ -224,6 +234,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             a_s = '{:.3f}'.format(row['a_start']) if row['a_start'] is not None else "-"
             off_val = row['offset']
             off_str = "-"
+            jit_str = '{:.1f}ms'.format(row['jitter'] * 1000) if row['jitter'] > 0 else "-"
             badge = ""
             
             if off_val is not None:
@@ -234,22 +245,26 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             
             if row['gap']:
                 badge += ' <span class="badge" style="background: #f43f5e">GAP</span>'
+            if row['jitter'] > 0.02:
+                badge += ' <span class="badge" style="background: #fbbf24; color: #000">JAG</span>'
             
-            table_html += '<tr><td>' + str(row['index']) + '</td><td>' + v_s + '</td><td>' + a_s + '</td><td>' + off_str + '</td><td>' + badge + '</td></tr>'
+            table_html += '<tr><td>' + str(row['index']) + '</td><td>' + v_s + '</td><td>' + a_s + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + badge + '</td></tr>'
         table_html += "</tbody></table>"
         log(table_html)
 
-        # 스마트 진단 가이드
-        log("[*] 스마트 진단 보고서 (v1.3)", "header")
+        # 스마트 진단 가이드 (v1.4)
+        log("[*] 스마트 진단 보고서 (v1.4)", "header")
         if is_aligned:
-            log("✅ <b>분석 결과:</b> 비디오와 오디오가 완벽하게 동기화되어 있습니다. FFmpeg 옵션이 최적으로 작동 중입니다.", "success")
+            log("✅ <b>안정적:</b> 모든 데이터가 완벽하게 일치합니다. 최상의 상태입니다.", "success")
         elif is_stable:
-            log("ℹ️ <b>분석 결과 (고정 오프셋):</b> 오프셋이 약 " + avg_offset_ms + "로 일정하게 유지되고 있습니다. 이는 FFmpeg 옵션은 작동 중이나, 소스 단계의 초기 지연(Encoder Latency)이 포함된 상태입니다. 실감상에는 문제가 없을 가능성이 높습니다.", "info")
+            log("ℹ️ <b>고정 오프셋 (Linear):</b> 오프셋이 존재하나 흐름이 매우 일정합니다. 안드로이드 하드웨어 디코더가 안정적으로 처리할 수 있는 상태입니다.", "info")
+        elif is_jagged:
+            log("🚫 <b>불안정 (Jagged Jitter):</b> 세그먼트 간 오프셋이 급격하게 출렁입니다(최대 " + max_jitter_ms + "). 이는 안드로이드 재생 실패의 주요 원인입니다. FFmpeg 옵션을 통해 이 '지터'를 억제해야 합니다.", "error")
         else:
-            log("⚠️ <b>분석 결과 (가변 드리프트):</b> 오프셋이 일정하지 않고 변동(편차 " + variance_ms + ")이 큽니다. FFmpeg에서 <code>-async 1</code> 또는 <code>aresample=async=1</code> 옵션이 누락되었거나, 소스 자체의 타임스탬프가 불안정할 수 있습니다.", "warning")
+            log("⚠️ <b>주의:</b> 오프셋이 임계값을 초과하거나 흐름이 고르지 않습니다. 스트림 점검이 필요합니다.", "warning")
             
         if any(row['gap'] for row in analysis_data):
-            log("🚨 <b>주의:</b> 스트림 중간에 타임스탬프 불연속성(Gap)이 발견되었습니다. 이는 소스 파일의 끊김이나 잘못된 세그먼팅으로 인해 발생하며, FFmpeg 옵션만으로는 해결되지 않을 수 있습니다.", "error")
+            log("🚨 <b>연속성 오류:</b> 타임스탬프 불연속성(Gap)이 감지되었습니다. 원본 소스의 타임라인 자체가 끊겨 있을 가능성이 높습니다.", "error")
 
     log("[*] 모든 분석 완료", "header")
 
