@@ -36,6 +36,14 @@
     - [x] v2.2 문서화
 - [x] 기술 핸드오버 문서 및 프로젝트 정리 (v1.9 기준 완료)
 
+## Chromium 에러 분석
+- **에러**: `Parsed buffers not in DTS sequence` → `DEMUXER_ERROR_COULD_NOT_OPEN`
+- **발생 지점**: `MergeBufferQueues()` (media/base/stream_parser.cc)
+- **원인**: 오디오/비디오 DTS를 하나의 큐로 병합할 때, 오디오 DTS가 역행하면 즉시 실패
+- **검증 조건**: `current_dts < last_decode_timestamp` → return false
+- **해결**: `-af aresample=async=1`로 오디오 DTS 연속성 강제 보장
+- **상세 분석**: [chromium_dts_error_analysis.md](chromium_dts_error_analysis.md)
+
 ## 테스트 소스
 - **정상 재생 (aresample=async=1 적용)**: `https://pluto90k.v4.wecandeotest.com/file/2501/4926/V22133/V22133.m3u8`
   - 안드로이드 모바일 크롬 정상 재생 확인
