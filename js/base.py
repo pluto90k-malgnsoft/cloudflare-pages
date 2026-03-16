@@ -100,8 +100,9 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
     last_v_dts_end = None
     last_a_dts_end = None
     all_offsets = []
-    all_jitters = [] # 세그먼트 간 오프셋 변화량 (Gap 제외)
+    all_raw_diffs = [] # 방향을 포함한 원시 변화량
     analysis_data = [] # 테이블용 데이터 수집
+    last_gap_index = -1 # 마지막 GAP 발생 위치
     
     for i in range(count):
         actual_idx = start_index + i
@@ -120,15 +121,10 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             v_start = v.firstPts if v.firstPts is not None else v.firstDts
             a_start = a.firstPts if a.firstPts is not None else a.firstDts
             
-            if v_start is not None:
-                log('  Video PTS: ' + '{:.3f}'.format(v.firstPts) + ' | DTS: ' + '{:.3f}'.format(v.firstDts), 'info')
-            if a_start is not None:
-                log('  Audio PTS: ' + '{:.3f}'.format(a.firstPts) + ' | DTS: ' + '{:.3f}'.format(a.firstDts), 'info')
-            
             # A/V Offset 및 Gap 확인
             offset = None
             has_gap = False
-            jitter = 0
+            raw_diff = 0
             if v_start is not None and a_start is not None:
                 offset = v_start - a_start
                 
@@ -138,11 +134,28 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                     if abs(v_diff) > 0.5 or v_diff < -0.1:
                         has_gap = True
                 
-                # 지터(Jitter) 계산: 이전 세그먼트 오프셋과의 차이
+                # 변화량(Raw Diff) 계산
                 if all_offsets:
-                    jitter = abs(offset - all_offsets[-1])
-                    if not has_gap: # Gap 구간의 지터는 시스템 불안정으로 보지 않음
-                        all_jitters.append(jitter)
+                    raw_diff = offset - all_offsets[-1]
+                    if not has_gap:
+                        all_raw_diffs.append(raw_diff)
+                
+                # 규칙성(Predictability) 체크
+                is_consistent = False
+                if len(all_raw_diffs) >= 3:
+                    recent = all_raw_diffs[-3:]
+                    if (max(recent) - min(recent)) < 0.0015: # 최근 3개 변화량이 1.5ms 이내로 일정
+                        is_consistent = True
+                
+                # GAP 복구 분석
+                recovery_info = ""
+                if has_gap:
+                    last_gap_index = actual_idx
+                elif last_gap_index != -1:
+                    gap_dist = actual_idx - last_gap_index
+                    if is_consistent:
+                        recovery_info = " (Stable after " + str(gap_dist) + " segs)"
+                        last_gap_index = -1
                 
                 all_offsets.append(offset)
                 
@@ -150,18 +163,18 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 sync_status = "✅ Synced"
                 log_type = "success"
                 
-                # 임계값 완화: 150ms 이상만 위험, 100ms 이상 주의 (v1.5)
-                if abs(offset) >= 0.15:
+                # 진단 임계값 (v1.6): 규칙적이면 150ms까지 허용, 불규칙하면 80ms 주의
+                if abs(offset) >= 0.15 and not is_consistent:
                     sync_status = "🚨 CRITICAL"
                     log_type = "error"
-                elif abs(offset) >= 0.1:
+                elif abs(offset) >= 0.08 or (abs(raw_diff) > 0.02 and not is_consistent):
                     sync_status = "⚠️ Warning"
                     log_type = "warning"
                 
-                jitter_str = ' (Jitter: {:.1f}ms)'.format(jitter * 1000) if jitter > 0 else ""
-                log('  🔗 Offset: ' + '{:.1f}'.format(offset_ms) + 'ms' + jitter_str + ' [' + sync_status + ']', log_type)
+                diff_str = ' (Diff: {:.1f}ms'.format(raw_diff * 1000) + recovery_info + ')' if raw_diff != 0 else ""
+                log('  🔗 Offset: ' + '{:.1f}'.format(offset_ms) + 'ms' + diff_str + ' [' + sync_status + ']', log_type)
                 if has_gap:
-                    log('  ℹ️ Discontinuity(Gap) 감지됨. 이 구간의 지터는 정상 범위로 간주합니다.', 'info')
+                    log('  ℹ️ Discontinuity(Gap) 발생. 복구 패턴을 감시합니다.', 'info')
 
             # 그래프 렌더링
             canvas_id = 'chart-seg-' + str(actual_idx)
@@ -174,7 +187,8 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 "v_start": v_start,
                 "a_start": a_start,
                 "offset": offset,
-                "jitter": jitter,
+                "raw_diff": raw_diff,
+                "consistent": is_consistent,
                 "gap": has_gap
             })
             
@@ -190,32 +204,35 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         avg_offset = sum(all_offsets) / len(all_offsets)
         max_abs_offset = max([abs(o) for o in all_offsets])
         offset_range = max(all_offsets) - min(all_offsets) 
-        max_clean_jitter = max(all_jitters) if all_jitters else 0
         
-        # 지터의 규칙성(Linearity) 분석: 지터들 사이의 변화가 2ms 이내면 매우 일정함
-        jitter_diffs = [abs(all_jitters[j] - all_jitters[j-1]) for j in range(1, len(all_jitters))]
-        is_linear = len(jitter_diffs) > 0 and max(jitter_diffs) < 0.005 
-
-        # 진단 임계값 (v1.5 최적화)
-        is_stable = is_linear or (offset_range < 0.03 and max_clean_jitter < 0.015)
-        is_jagged = max_clean_jitter > 0.05 # 50ms 이상 불규칙하게 튈 때만 위험 
-        is_aligned = max_abs_offset < 0.01
+        # 지그재그 진동(Oscillation) 최종 판정
+        oscillation_count = 0
+        if len(all_raw_diffs) >= 2:
+            for j in range(1, len(all_raw_diffs)):
+                if all_raw_diffs[j] * all_raw_diffs[j-1] < 0 and abs(all_raw_diffs[j]) > 0.01:
+                    oscillation_count += 1
+        
+        is_oscillating = oscillation_count >= 2
+        is_stable_drift = not is_oscillating and len(all_raw_diffs) >= 3 # 일정한 방향으로 흐름
         
         status_label = "정상"
         status_color = "var(--success)"
-        if max_abs_offset > 0.25 or is_jagged: # 250ms 이상만 위험
-            status_label = "위험"
+        if is_oscillating:
+            status_label = "위험 (진동)"
             status_color = "var(--error)"
-        elif max_abs_offset > 0.1 or offset_range > 0.08:
+        elif max_abs_offset > 0.2:
+            status_label = "위험 (거대 오차)"
+            status_color = "var(--error)"
+        elif max_abs_offset > 0.1 and not is_stable_drift:
             status_label = "주의"
             status_color = "var(--warning)"
             
         avg_offset_ms = '{:.1f}'.format(avg_offset*1000) + 'ms'
-        max_jitter_ms = '{:.1f}'.format(max_clean_jitter*1000) + 'ms'
+        max_jitter_ms = '{:.1f}'.format(max([abs(d) for d in all_raw_diffs])*1000) if all_raw_diffs else "0"
         
         dashboard_html = '<div class="result-dashboard">'
         dashboard_html += '    <div class="stat-card">'
-        dashboard_html += '        <div class="stat-label">상태</div>'
+        dashboard_html += '        <div class="stat-label">진단 결과</div>'
         dashboard_html += '        <div class="stat-value" style="color: ' + status_color + '">' + status_label + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '    <div class="stat-card">'
@@ -223,53 +240,56 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         dashboard_html += '        <div class="stat-value">' + avg_offset_ms + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '    <div class="stat-card">'
-        dashboard_html += '        <div class="stat-label">유효 지터(Jitter)</div>'
-        dashboard_html += '        <div class="stat-value">' + max_jitter_ms + '</div>'
+        dashboard_html += '        <div class="stat-label">예측 가능성</div>'
+        dashboard_html += '        <div class="stat-value">' + ("높음" if is_stable_drift else "낮음") + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '</div>'
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v1.5)', 'header')
+        log('[*] 분석 상세 결과 (v1.6)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
         table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
         
         for row in analysis_data:
-            v_s = '{:.3f}'.format(row['v_start']) if row['v_start'] is not None else "-"
-            a_s = '{:.3f}'.format(row['a_start']) if row['a_start'] is not None else "-"
             off_val = row['offset']
-            off_str = "-"
-            jit_str = '{:.1f}ms'.format(row['jitter'] * 1000) if row['jitter'] > 0 else "-"
+            off_str = '{:.1f}ms'.format(off_val * 1000) if off_val is not None else "-"
+            jit_val = abs(row['raw_diff'])
+            jit_str = '{:.1f}ms'.format(jit_val * 1000) if jit_val > 0 else "-"
             badge = ""
             
             if off_val is not None:
-                off_str = '{:.1f}ms'.format(off_val * 1000)
-                # 테이블 내 배지 임계값도 상향 (v1.5)
-                if abs(off_val) < 0.03: badge = '<span class="badge badge-success">Synced</span>'
-                elif abs(off_val) < 0.1: badge = '<span class="badge badge-warning">Skew</span>'
-                else: badge = '<span class="badge badge-error">Large</span>'
+                if row['consistent']: badge = '<span class="badge badge-success">Consistent</span>'
+                elif abs(off_val) < 0.05: badge = '<span class="badge badge-success">Synced</span>'
+                elif abs(off_val) < 0.12: badge = '<span class="badge badge-warning">Skew</span>'
+                else: badge = '<span class="badge badge-error">Critical</span>'
             
             if row['gap']:
-                badge += ' <span class="badge" style="background: #64748b">GAP</span>' # 차분한 색상
-            elif row['jitter'] > 0.05:
-                badge += ' <span class="badge" style="background: #f43f5e">JAG</span>'
+                badge += ' <span class="badge" style="background: #64748b">GAP</span>'
+            elif row['raw_diff'] != 0:
+                # 방향이 바뀌는지 체크
+                idx_in_data = row['index'] - start_index
+                if idx_in_data > 0:
+                    prev_diff = analysis_data[idx_in_data-1]['raw_diff']
+                    if row['raw_diff'] * prev_diff < 0 and abs(row['raw_diff']) > 0.01:
+                        badge += ' <span class="badge" style="background: #f43f5e">ZIGZAG</span>'
             
-            table_html += '<tr><td>' + str(row['index']) + '</td><td>' + v_s + '</td><td>' + a_s + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + badge + '</td></tr>'
+            table_html += '<tr><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + badge + '</td></tr>'
         table_html += "</tbody></table>"
         log(table_html)
 
-        # 스마트 진단 가이드 (v1.5)
-        log("[*] 스마트 진단 보고서 (v1.5)", "header")
-        if is_aligned:
-            log("✅ <b>안정적:</b> 모든 데이터가 동기화 범내에 있습니다.", "success")
-        elif is_stable:
-            log("ℹ️ <b>정상 (규칙적 흐름):</b> 오프셋이 존재하나 흐름이 선형적이거나 매우 일정합니다. 안드로이드 크롬 등 현대적인 브라우저에서 문제없이 재생 가능한 상태입니다.", "success")
-        elif is_jagged:
-            log("🚫 <b>불안정 (비선형 지터):</b> 세그먼트 간 오프셋이 불규칙하게 튑니다. 인코딩 설정(aresample)을 재점검하시기 바랍니다.", "error")
+        # 스마트 진단 가이드 (v1.6)
+        log("[*] 스마트 진단 보고서 (v1.6)", "header")
+        if is_stable_drift:
+            log("✅ <b>STABLE DRIFT (정상):</b> 오차가 존재하지만 변화가 매우 규칙적입니다. 안드로이드 크롬의 예측 모델이 이를 동기화하여 안정적으로 재생할 수 있는 상태입니다.", "success")
+        elif is_oscillating:
+            log("🚫 <b>FATAL OSCILLATION (위험):</b> 오차가 무작위로 튀거나 지그재그로 진동하고 있습니다. 이는 하드웨어 디코더의 버퍼 포화 및 재생 중단을 유발하는 핵심 원인입니다. (FFmpeg -async 1 권장)", "error")
+        elif max_abs_offset > 0.15:
+            log("⚠️ <b>LARGE DELAY (주의):</b> 오차가 전반적으로 큽니다. 규칙성이 확보되지 않으면 특정 기기에서 끊김이 발생할 수 있습니다.", "warning")
         else:
-            log("⚠️ <b>주의:</b> 오프셋이 다소 높으나, 흐름이 일정하다면 대부분의 환경에서 정상 재생됩니다.", "warning")
-            
+            log("ℹ️ <b>분석 완료:</b> 스트림이 대체로 안정적입니다.", "info")
+
     log("[*] 모든 분석 완료", "header")
 
     log("[*] 모든 분석 완료", "header")
