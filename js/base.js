@@ -117,11 +117,52 @@ window.parseSegmentTimestamps = async (arrayBuffer) => {
             video.actualDuration = 0;
         }
 
+        // v2.3: DTS Sequence Analysis (Chromium MergeBufferQueues 시뮬레이션)
+        let audioDtsMonotonic = true;
+        let videoDtsMonotonic = true;
+
+        for (let k = 1; k < audio.samples.dts.length; k++) {
+            if (audio.samples.dts[k] < audio.samples.dts[k - 1]) {
+                audioDtsMonotonic = false;
+                break;
+            }
+        }
+        for (let k = 1; k < video.samples.dts.length; k++) {
+            if (video.samples.dts[k] < video.samples.dts[k - 1]) {
+                videoDtsMonotonic = false;
+                break;
+            }
+        }
+
+        // Chromium MergeBufferQueues 시뮬: A/V DTS를 하나의 큐로 병합 후 단조 증가 검증
+        let dtsMergeOk = true;
+        if (audio.samples.dts.length > 0 && video.samples.dts.length > 0) {
+            let ai = 0, vi = 0;
+            let lastMergedDts = -Infinity;
+            const aDts = audio.samples.dts;
+            const vDts = video.samples.dts;
+            while (ai < aDts.length || vi < vDts.length) {
+                let pickAudio;
+                if (ai >= aDts.length) pickAudio = false;
+                else if (vi >= vDts.length) pickAudio = true;
+                else pickAudio = aDts[ai] <= vDts[vi];
+                const cur = pickAudio ? aDts[ai++] : vDts[vi++];
+                if (cur < lastMergedDts) {
+                    dtsMergeOk = false;
+                    break;
+                }
+                lastMergedDts = cur;
+            }
+        }
+
         resolve({
             video,
             audio,
             hasVideo: video.firstPts !== null,
-            hasAudio: audio.firstPts !== null
+            hasAudio: audio.firstPts !== null,
+            audioDtsMonotonic,
+            videoDtsMonotonic,
+            dtsMergeOk
         });
     });
 };

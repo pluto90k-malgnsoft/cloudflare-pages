@@ -75,6 +75,7 @@
 | **v2.1** | **Aresample 감지** | `-af aresample=async=1` 적용 여부 자동 판별 및 3대 지표 분석 |
 | **v2.1.1** | 오탐 수정 | 실측 데이터 기반 임계값 조정, GAP 세그먼트 지표 제외 |
 | **v2.2** | **콘텐츠 경계 감지** | PTS 역행을 콘텐츠 경계로 인식, 연속 구간 내 역행만 FATAL 판정 |
+| **v2.3** | **DTS 시퀀스 검증** | Chromium MergeBufferQueues 시뮬레이션, `Parsed buffers not in DTS sequence` 진단 |
 
 ---
 

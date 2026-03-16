@@ -34,6 +34,13 @@
     - [x] "정상 (Discontinuity N개)" 판정 로직 추가
     - [x] StdDev 임계값 추가 조정: 5→10ms (PES 파싱 특성 반영)
     - [x] v2.2 문서화
+- [x] v2.3: DTS Sequence 검증 엔진 도입 (Chromium MergeBufferQueues 시뮬레이션)
+    - [x] 세그먼트 내 오디오/비디오 DTS 단조 증가 검증
+    - [x] A/V DTS 병합 시뮬레이션 (Chromium과 동일 조건)
+    - [x] 세그먼트 간 DTS 연속성 검증 (콘텐츠 경계 제외)
+    - [x] 대시보드 DTS 시퀀스 카드 / DTS-FAIL, DTS-REV, DTS-GAP 배지
+    - [x] DTS Sequence 전용 진단 보고서 (Chromium 에러 메시지 포함)
+    - [x] 판정 최우선순위: DTS 역행 > 타임라인 역행 > 진동 > ...
 - [x] 기술 핸드오버 문서 및 프로젝트 정리 (v1.9 기준 완료)
 
 ## Chromium 에러 분석
@@ -54,4 +61,5 @@
 - **v1.9**: GAP 발생 후의 회복력을 측정하여 불필요한 경고를 줄임.
 - **v2.0**: 시간의 흐름(방향성)을 먼저 검증하여 안드로이드 디코더 정지 원인을 100% 포착.
 - **v2.1**: FFmpeg `-af aresample=async=1` 옵션 적용 여부를 자동 감지하여 안드로이드 크롬 재생 불가 원인을 진단.
-- **v2.2 (현재)**: PTS 역행을 콘텐츠 경계로 인식하여 오탐 제거. 실측 데이터 기반으로 임계값 최적화 완료.
+- **v2.2**: PTS 역행을 콘텐츠 경계로 인식하여 오탐 제거. 실측 데이터 기반으로 임계값 최적화 완료.
+- **v2.3 (현재)**: Chromium `MergeBufferQueues` DTS 검증을 시뮬레이션하여 `Parsed buffers not in DTS sequence` 에러를 정확히 진단.
