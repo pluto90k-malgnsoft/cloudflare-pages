@@ -1,4 +1,4 @@
-# HLS Continuum Validator 개발 현황 (v2.0)
+# HLS Continuum Validator 개발 현황 (v2.2)
 
 ## 프로젝트 개요
 안드로이드 크롬 및 저사양 디바이스에서의 HLS 재생 안정성을 보장하기 위한 고정밀 A/V 연속성 분석 도구.
@@ -22,9 +22,28 @@
     - [x] 테이블에 A-Gap 컬럼 및 AUDIO-GAP, DUR-DRIFT 배지 추가
     - [x] Aresample 전용 진단 보고서 섹션 추가
     - [x] v2.1 문서화
+- [x] v2.1.1: 실측 데이터 기반 Aresample 오탐 수정
+    - [x] GAP/역행 세그먼트를 Aresample 지표 수집에서 제외
+    - [x] 임계값 조정: Audio Gap 50→150ms, Duration 30→100ms, StdDev 2→5ms
+    - [x] GAP 세그먼트에서 AUDIO-GAP/DUR-DRIFT 배지 억제
+- [x] v2.2: PTS 기반 콘텐츠 경계 감지 엔진 도입
+    - [x] PTS 역행 GAP을 콘텐츠 경계(편집/연결점)로 인식
+    - [x] 콘텐츠 경계를 타임라인 역행 FATAL 판정에서 제외
+    - [x] 연속 구간 내 역행만 FATAL로 판정 (진짜 오류만 포착)
+    - [x] `DISC` 배지(파란색) 및 콘텐츠 경계 행 스타일 추가
+    - [x] "정상 (Discontinuity N개)" 판정 로직 추가
+    - [x] StdDev 임계값 추가 조정: 5→10ms (PES 파싱 특성 반영)
+    - [x] v2.2 문서화
 - [x] 기술 핸드오버 문서 및 프로젝트 정리 (v1.9 기준 완료)
+
+## 테스트 소스
+- **정상 재생 (aresample=async=1 적용)**: `https://pluto90k.v4.wecandeotest.com/file/2501/4926/V22133/V22133.m3u8`
+  - 안드로이드 모바일 크롬 정상 재생 확인
+  - PTS 역행 포함 (콘텐츠 경계 2개), `#EXT-X-DISCONTINUITY` 태그 없음
+- **비정상 재생 (aresample=async=1 미적용)**: (확인 대기)
 
 ## 최종 결과
 - **v1.9**: GAP 발생 후의 회복력을 측정하여 불필요한 경고를 줄임.
 - **v2.0**: 시간의 흐름(방향성)을 먼저 검증하여 안드로이드 디코더 정지 원인을 100% 포착.
-- **v2.1 (현재)**: FFmpeg `-af aresample=async=1` 옵션 적용 여부를 자동 감지하여 안드로이드 크롬 재생 불가 원인을 진단.
+- **v2.1**: FFmpeg `-af aresample=async=1` 옵션 적용 여부를 자동 감지하여 안드로이드 크롬 재생 불가 원인을 진단.
+- **v2.2 (현재)**: PTS 역행을 콘텐츠 경계로 인식하여 오탐 제거. 실측 데이터 기반으로 임계값 최적화 완료.
