@@ -436,6 +436,7 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
 
     last_v_dts_end = None
     last_a_dts_end = None
+    all_offsets = []
     
     for i in range(count):
         document.getElementById("status-text").innerText = f"분석 중 ({i+1}/{count})"
@@ -447,7 +448,6 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
             data = await r.bytes()
             ts_info = await window.parseSegmentTimestamps(Uint8Array.new(data).buffer)
             
-            # ts_info: { video: {firstPts, lastPts...}, audio: {firstPts...}, hasVideo, hasAudio }
             v = ts_info.video
             a = ts_info.audio
             
@@ -459,12 +459,30 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
             if a_start is not None:
                 log(f"  Audio PTS: {a.firstPts:.3f} | DTS: {a.firstDts:.3f}", "info")
             
-            # A/V Offset 계산
+            # A/V Offset 및 Drift 계산
             if v_start is not None and a_start is not None:
                 offset = v_start - a_start
                 offset_ms = offset * 1000
-                sync_status = "✅ Synced" if abs(offset) < 0.01 else "⚠️ Skewed"
-                log(f"  🔗 A/V Offset: {offset:.4f}s ({offset_ms:.1f}ms) [{sync_status}]", "warning" if abs(offset) >= 0.01 else "success")
+                drift = 0
+                if all_offsets:
+                    drift = abs(offset - all_offsets[-1])
+                
+                all_offsets.append(offset)
+                
+                sync_status = "✅ Synced"
+                log_type = "success"
+                
+                if abs(offset) >= 0.1:
+                    sync_status = "🚨 CRITICAL (Android Failure Risk)"
+                    log_type = "error"
+                elif abs(offset) >= 0.06:
+                    sync_status = "⚠️ Warning (Mobile Skew)"
+                    log_type = "warning"
+                
+                log(f"  🔗 A/V Offset: {offset:.4f}s ({offset_ms:.1f}ms) [{sync_status}]", log_type)
+                
+                if drift > 0.05:
+                    log(f"    📉 High Drift detected: {drift*1000:.1f}ms change from prev segment", "error")
                 
                 if abs(offset) < 0.001:
                     log("    💡 FFMPEG -async 1 적용 가능성 높음 (Start aligned)", "info")
@@ -483,7 +501,6 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
                 if abs(a_diff) > 0.1:
                     log(f"  🎵 Audio Gap/Overlap: {a_diff:.3f}s", "error")
                 
-            # 다음 분석을 위해 현재 세그먼트의 끝 시간 저장
             last_v_dts_end = v.lastPts if v.lastPts is not None else v.lastDts
             last_a_dts_end = a.lastPts if a.lastPts is not None else a.lastDts
             
@@ -491,6 +508,26 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
         except Exception as e:
             log(f"  [!] 세그먼트 오류: {e}", "error")
 
+    # 요약 레포트
+    if all_offsets:
+        avg_offset = sum(all_offsets) / len(all_offsets)
+        max_offset = max([abs(o) for o in all_offsets])
+        variance = max(all_offsets) - min(all_offsets)
+        
+        log(f"[*] 분석 완료 요약", "header")
+        log(f"  - 평균 A/V Offset: {avg_offset*1000:.1f}ms", "info")
+        log(f"  - 최대 A/V Offset: {max_offset*1000:.1f}ms", "warning" if max_offset > 0.06 else "info")
+        log(f"  - Offset 변동폭(Jitter): {variance*1000:.1f}ms", "error" if variance > 0.05 else "info")
+        
+        if max_offset > 0.1:
+            log("  ❗ 결론: 심각한 A/V 싱크 오류 감지. Android Chrome에서 재생 실패 가능성이 매우 높습니다.", "error")
+        elif variance > 0.05:
+            log("  ❗ 결론: 싱크가 불안정합니다. FFMPEG aresample=async=1 옵션 적용을 권장합니다.", "warning")
+        elif avg_offset < 0.005:
+            log("  ✅ 결론: A/V 싱크가 매우 안정적입니다.", "success")
+        else:
+            log("  ✅ 결론: 싱크가 일정한 편입니다. (Constant delay)", "success")
+    
     log("[*] 모든 분석 완료", "header")
 </py-script>
 
