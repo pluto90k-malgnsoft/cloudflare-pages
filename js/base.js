@@ -117,10 +117,7 @@ window.updateProgress = (percent) => {
 
 window.renderSegmentChart = (canvasId, videoSamples, audioSamples) => {
     const canvas = document.getElementById(canvasId);
-    if (!canvas) {
-        console.error("Canvas not found:", canvasId);
-        return;
-    }
+    if (!canvas) return;
     const ctx = canvas.getContext('2d');
     
     const v_pts = (videoSamples && videoSamples.pts) ? videoSamples.pts : [];
@@ -128,34 +125,48 @@ window.renderSegmentChart = (canvasId, videoSamples, audioSamples) => {
     const a_pts = (audioSamples && audioSamples.pts) ? audioSamples.pts : [];
     const a_dts = (audioSamples && audioSamples.dts) ? audioSamples.dts : [];
 
+    // 세그먼트 내 최소 PTS를 찾아 0점 기준으로 삼음
+    const allPts = [...v_pts, ...a_pts];
+    const minPts = allPts.length > 0 ? Math.min(...allPts) : 0;
+
+    const mapToData = (ptsArray) => ptsArray.map(p => ({ x: p - minPts, y: p - minPts }));
+    const mapToDataDts = (dtsArray) => dtsArray.map(d => ({ x: d - minPts, y: d - minPts }));
+
     const createDataset = (label, data, color) => ({
         label: label,
         data: data,
         borderColor: color,
         borderWidth: 1.5,
-        pointRadius: 0,
+        pointRadius: 1, // 포인트를 살짝 보여줌
         fill: false,
-        tension: 0.1
+        tension: 0
     });
 
     try {
         new Chart(ctx, {
             type: 'line',
             data: {
-                labels: Array.from({length: Math.max(v_pts.length, a_pts.length)}, (_, i) => i),
                 datasets: [
-                    createDataset('Video PTS', v_pts, '#38bdf8'),
-                    createDataset('Video DTS', v_dts, '#818cf8'),
-                    createDataset('Audio PTS', a_pts, '#22c55e'),
-                    createDataset('Audio DTS', a_dts, '#f59e0b')
+                    createDataset('Video PTS', mapToData(v_pts), '#38bdf8'),
+                    createDataset('Video DTS', mapToDataDts(v_dts), '#818cf8'),
+                    createDataset('Audio PTS', mapToData(a_pts), '#22c55e'),
+                    createDataset('Audio DTS', mapToDataDts(a_dts), '#f59e0b')
                 ]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
-                    x: { display: false },
+                    x: { 
+                        type: 'linear',
+                        display: true,
+                        title: { display: true, text: 'Time in Segment (s)', color: '#94a3b8', font: { size: 10 } },
+                        grid: { color: 'rgba(255,255,255,0.05)' },
+                        ticks: { color: '#94a3b8', font: { size: 10 } }
+                    },
                     y: { 
+                        display: true,
+                        title: { display: true, text: 'Relative PTS (s)', color: '#94a3b8', font: { size: 10 } },
                         ticks: { color: '#94a3b8', font: { size: 10 } },
                         grid: { color: 'rgba(255,255,255,0.05)' }
                     }
@@ -164,6 +175,10 @@ window.renderSegmentChart = (canvasId, videoSamples, audioSamples) => {
                     legend: {
                         position: 'top',
                         labels: { boxWidth: 12, color: '#f1f5f9', font: { size: 10 } }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
                     }
                 },
                 animation: false
