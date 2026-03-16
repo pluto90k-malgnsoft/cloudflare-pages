@@ -563,22 +563,34 @@ async function run() {
                 intraFails += intraIssues;
                 mergeFails += mergeIssues;
 
-                // 4. Inter-segment continuity (skip at discontinuity boundaries)
+                // 4. Inter-segment continuity
+                // Chromium ManifestDemuxer auto-adjusts timestampOffset per segment,
+                // so raw DTS jumps between segments are NOT violations.
+                // Only flag if DTS reversal happens within a CONTINUOUS sequence
+                // (no large jump detected).
                 let interIssue = null;
-                if (!isDisc) {
-                    if (lastAudioDts !== null && data.audioFrames.length > 0) {
-                        const firstA = data.audioFrames[0].dts;
-                        if (firstA < lastAudioDts - 90) { // 1ms tolerance in 90kHz
-                            interIssue = { type: 'audio', prev: lastAudioDts, cur: firstA };
-                            interFails++;
-                        }
+                let timelineReset = false;
+                if (!isDisc && lastAudioDts !== null && data.audioFrames.length > 0) {
+                    const firstA = data.audioFrames[0].dts;
+                    const gap = Math.abs(firstA - lastAudioDts);
+                    // Only check continuity when timestamps are in the same timeline
+                    // (gap < 2 seconds = same timeline, larger = timeline jump / offset reset)
+                    const isSameTimeline = gap < 2 * 90000;
+                    if (!isSameTimeline) timelineReset = true;
+                    if (isSameTimeline && firstA < lastAudioDts - 90) {
+                        interIssue = { type: 'audio', prev: lastAudioDts, cur: firstA };
+                        interFails++;
                     }
-                    if (lastVideoDts !== null && data.videoFrames.length > 0) {
-                        const firstV = data.videoFrames[0].dts;
-                        if (firstV < lastVideoDts - 90) {
-                            interIssue = interIssue || {};
-                            interIssue.videoIssue = { prev: lastVideoDts, cur: firstV };
-                            if (!interIssue.type) { interIssue.type = 'video'; interFails++; }
+                }
+                if (!isDisc && lastVideoDts !== null && data.videoFrames.length > 0) {
+                    const firstV = data.videoFrames[0].dts;
+                    const gap = Math.abs(firstV - lastVideoDts);
+                    const isSameTimeline = gap < 2 * 90000;
+                    if (!isSameTimeline) timelineReset = true;
+                    if (isSameTimeline && firstV < lastVideoDts - 90) {
+                        if (!interIssue) {
+                            interIssue = { type: 'video', prev: lastVideoDts, cur: firstV };
+                            interFails++;
                         }
                     }
                 }
@@ -605,7 +617,7 @@ async function run() {
                 const ok = intraIssues === 0 && mergeIssues === 0 && !interIssue;
                 const segResult = {
                     index: i, aCount, vCount, sampleRate: data.sampleRate,
-                    audioMono, videoMono, merge, interIssue, ok, disc: isDisc,
+                    audioMono, videoMono, merge, interIssue, ok, disc: isDisc, timelineReset,
                     aFirstDts: data.audioFrames[0]?.dts, aLastDts: data.audioFrames[data.audioFrames.length - 1]?.dts,
                     vFirstDts: data.videoFrames[0]?.dts, vLastDts: data.videoFrames[data.videoFrames.length - 1]?.dts,
                 };
@@ -613,7 +625,8 @@ async function run() {
 
                 // Log summary per segment
                 const statusIcon = ok ? '<span style="color:var(--success)">PASS</span>' : '<span style="color:var(--error)">FAIL</span>';
-                log(`${label}: ${statusIcon} | AAC: ${aCount} frames, Video: ${vCount} frames | SR: ${data.sampleRate}Hz`, ok ? 'log-ok' : 'log-err');
+                const jumpNote = timelineReset ? ' <span style="color:#0891b2">[Timeline Jump — offset auto-adjusted]</span>' : '';
+                log(`${label}: ${statusIcon} | AAC: ${aCount} frames, Video: ${vCount} frames | SR: ${data.sampleRate}Hz${jumpNote}`, ok ? 'log-ok' : 'log-err');
 
                 if (audioMono.length > 0) {
                     log(`  Audio DTS 역행 ${audioMono.length}건 (세그먼트 내)`, 'log-err');
@@ -710,8 +723,10 @@ async function run() {
                 ? `<span class="badge b-fail">${r.merge.violations.length}</span>` : '<span class="badge b-ok">OK</span>';
             const interBadge = r.disc
                 ? '<span class="badge b-warn">DISC</span>'
-                : r.interIssue
-                    ? '<span class="badge b-fail">FAIL</span>' : '<span class="badge b-ok">OK</span>';
+                : r.timelineReset
+                    ? '<span class="badge" style="background:rgba(8,145,178,0.15);color:#0891b2">JUMP</span>'
+                    : r.interIssue
+                        ? '<span class="badge b-fail">FAIL</span>' : '<span class="badge b-ok">OK</span>';
             const verdict = r.ok ? '<span class="badge b-ok">PASS</span>' : '<span class="badge b-fail">FAIL</span>';
 
             tableHtml += `<tr${rowCls}><td>${r.index}</td><td>${r.aCount}</td><td>${r.vCount}</td><td>${r.sampleRate}</td><td>${aRange}</td><td>${vRange}</td><td>${intraBadge}</td><td>${mergeBadge}</td><td>${interBadge}</td><td>${verdict}</td></tr>`;
