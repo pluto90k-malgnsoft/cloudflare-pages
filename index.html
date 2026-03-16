@@ -472,9 +472,8 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
                 
                 if all_offsets and not has_gap:
                     drift = abs(offset - all_offsets[-1])
-                    all_offsets.append(offset)
-                elif not all_offsets:
-                    all_offsets.append(offset)
+                
+                all_offsets.append(offset)
                 
                 sync_status = "✅ Synced"
                 log_type = "success"
