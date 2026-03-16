@@ -72,7 +72,7 @@
 
 <div class="container">
     <header>
-        <h1>Chromium DTS Sequence Analyzer v1.1</h1>
+        <h1>Chromium DTS Sequence Analyzer v1.2</h1>
         <p class="subtitle">AAC 프레임 레벨 DTS 파싱 — web_media_player_impl.cc:2068 에러 사전 검증</p>
     </header>
 
@@ -95,6 +95,7 @@
         <div class="stat"><div class="stat-val" id="s-vf">0</div><div class="stat-lbl">Video 프레임</div></div>
         <div class="stat"><div class="stat-val" id="s-intra" style="color:var(--success)">0</div><div class="stat-lbl">세그먼트 내 위반</div></div>
         <div class="stat"><div class="stat-val" id="s-merge" style="color:var(--success)">0</div><div class="stat-lbl">A/V 병합 위반</div></div>
+        <div class="stat"><div class="stat-val" id="s-gap" style="color:var(--success)">0</div><div class="stat-lbl">DTS 갭 위반</div></div>
         <div class="stat"><div class="stat-val" id="s-inter" style="color:var(--success)">0</div><div class="stat-lbl">세그먼트 간 위반</div></div>
         <div class="stat"><div class="stat-val" id="s-verdict" style="color:var(--success)">-</div><div class="stat-lbl">Chromium 판정</div></div>
     </div>
@@ -373,10 +374,24 @@ function checkMonotonic(frames) {
     const violations = [];
     for (let i = 1; i < frames.length; i++) {
         if (frames[i].dts < frames[i - 1].dts) {
-            violations.push({ position: i, cur: frames[i].dts, prev: frames[i - 1].dts, delta: frames[i].dts - frames[i - 1].dts });
+            violations.push({ position: i, cur: frames[i].dts, prev: frames[i - 1].dts, delta: frames[i].dts - frames[i - 1].dts, type: 'reversal' });
         }
     }
     return violations;
+}
+
+// Chromium ProcessFrame: dts_delta > 2 * last_frame_duration → discontinuity
+// This detects abnormal DTS gaps within a segment (e.g., 6s content with 23s DTS span)
+function checkDtsGaps(frames, expectedDurationTicks) {
+    const gaps = [];
+    const threshold = expectedDurationTicks * 2;
+    for (let i = 1; i < frames.length; i++) {
+        const delta = frames[i].dts - frames[i - 1].dts;
+        if (delta > threshold) {
+            gaps.push({ position: i, cur: frames[i].dts, prev: frames[i - 1].dts, delta, expected: expectedDurationTicks, type: 'gap' });
+        }
+    }
+    return gaps;
 }
 
 // ── Playlist Parser ──
@@ -512,7 +527,7 @@ async function run() {
     $('dash').style.display = 'grid';
     progress(0);
 
-    let totalAac = 0, totalVf = 0, intraFails = 0, mergeFails = 0, interFails = 0;
+    let totalAac = 0, totalVf = 0, intraFails = 0, mergeFails = 0, interFails = 0, gapFails = 0;
     let lastAudioDts = null, lastVideoDts = null;
     const segResults = [];
     // For global chart: collect all frame DTS across all segments
@@ -558,10 +573,29 @@ async function run() {
                 // 3. MergeBufferQueues simulation
                 const merge = mergeBufferQueues(data.audioFrames, data.videoFrames);
 
+                // 4. Chromium ProcessFrame gap check: dts_delta > 2 * frame_duration
+                // AAC frame duration = 1024 samples / sampleRate * 90000 (in 90kHz ticks)
+                const sr = data.sampleRate || 44100;
+                const aacFrameTicks = (1024 / sr) * 90000; // ~2090 ticks for 44100Hz
+                const audioGaps = checkDtsGaps(data.audioFrames, aacFrameTicks);
+                // Video: estimate frame duration from actual intervals
+                let videoFrameTicks = 3000; // default ~33ms (30fps)
+                if (data.videoFrames.length >= 2) {
+                    const vDeltas = [];
+                    for (let vi = 1; vi < Math.min(data.videoFrames.length, 20); vi++) {
+                        vDeltas.push(data.videoFrames[vi].dts - data.videoFrames[vi - 1].dts);
+                    }
+                    vDeltas.sort((a, b) => a - b);
+                    videoFrameTicks = vDeltas[Math.floor(vDeltas.length / 2)]; // median
+                }
+                const videoGaps = checkDtsGaps(data.videoFrames, videoFrameTicks);
+
                 const intraIssues = audioMono.length + videoMono.length;
                 const mergeIssues = merge.violations.length;
+                const gapIssues = audioGaps.length + videoGaps.length;
                 intraFails += intraIssues;
                 mergeFails += mergeIssues;
+                gapFails += gapIssues;
 
                 // 4. Inter-segment continuity
                 // Chromium ManifestDemuxer auto-adjusts timestampOffset per segment,
@@ -614,10 +648,10 @@ async function run() {
                     mergeViolationPoints.push({ x: allAudioDts.length + allVideoDts.length, y: v.cur.dts / 90000 });
                 }
 
-                const ok = intraIssues === 0 && mergeIssues === 0 && !interIssue;
+                const ok = intraIssues === 0 && mergeIssues === 0 && gapIssues === 0 && !interIssue;
                 const segResult = {
                     index: i, aCount, vCount, sampleRate: data.sampleRate,
-                    audioMono, videoMono, merge, interIssue, ok, disc: isDisc, timelineReset,
+                    audioMono, videoMono, merge, audioGaps, videoGaps, interIssue, ok, disc: isDisc, timelineReset,
                     aFirstDts: data.audioFrames[0]?.dts, aLastDts: data.audioFrames[data.audioFrames.length - 1]?.dts,
                     vFirstDts: data.videoFrames[0]?.dts, vLastDts: data.videoFrames[data.videoFrames.length - 1]?.dts,
                 };
@@ -647,6 +681,17 @@ async function run() {
                     }
                     if (mergeIssues > 3) log(`    ... 외 ${mergeIssues - 3}건`, 'log-dim');
                 }
+                if (gapIssues > 0) {
+                    const aGapCount = audioGaps.length;
+                    const vGapCount = videoGaps.length;
+                    log(`  DTS 갭 ${gapIssues}건 (ProcessFrame: delta > 2x frame_duration)${aGapCount ? ' Audio:' + aGapCount : ''}${vGapCount ? ' Video:' + vGapCount : ''}`, 'log-err');
+                    for (const g of audioGaps.slice(0, 3)) {
+                        log(`    Audio frame[${g.position}]: ${(g.prev / 90000).toFixed(6)}s -> ${(g.cur / 90000).toFixed(6)}s (gap: ${(g.delta / 90).toFixed(1)}ms, expected: ${(g.expected / 90).toFixed(1)}ms)`, 'log-warn');
+                    }
+                    for (const g of videoGaps.slice(0, 2)) {
+                        log(`    Video frame[${g.position}]: ${(g.prev / 90000).toFixed(6)}s -> ${(g.cur / 90000).toFixed(6)}s (gap: ${(g.delta / 90).toFixed(1)}ms)`, 'log-warn');
+                    }
+                }
                 if (interIssue) {
                     log(`  세그먼트 간 DTS 역행: ${interIssue.type} (${(interIssue.prev / 90000).toFixed(6)}s -> ${(interIssue.cur / 90000).toFixed(6)}s)`, 'log-err');
                 }
@@ -670,10 +715,13 @@ async function run() {
         $('s-merge').textContent = mergeFails;
         $('s-merge').style.color = mergeFails > 0 ? 'var(--error)' : 'var(--success)';
 
+        $('s-gap').textContent = gapFails;
+        $('s-gap').style.color = gapFails > 0 ? 'var(--error)' : 'var(--success)';
+
         $('s-inter').textContent = interFails;
         $('s-inter').style.color = interFails > 0 ? 'var(--error)' : 'var(--success)';
 
-        const totalFails = intraFails + mergeFails + interFails;
+        const totalFails = intraFails + mergeFails + gapFails + interFails;
         const verdict = totalFails > 0 ? 'FAIL' : 'PASS';
         $('s-verdict').textContent = verdict;
         $('s-verdict').style.color = totalFails > 0 ? 'var(--error)' : 'var(--success)';
@@ -689,6 +737,10 @@ async function run() {
             if (mergeFails > 0) {
                 log(`MergeBufferQueues 실패 ${mergeFails}건 — Chromium이 "Parsed buffers not in DTS sequence" 에러를 발생시킵니다.`, 'log-err');
                 log('에러 체인: MergeBufferQueues() → FrameProcessor::ProcessFrames() → DEMUXER_ERROR_COULD_NOT_OPEN → web_media_player_impl.cc:2068', 'log-warn');
+            }
+            if (gapFails > 0) {
+                log(`ProcessFrame DTS 갭 ${gapFails}건 — 세그먼트 내 프레임 간 DTS 간격이 예상 duration의 2배를 초과합니다.`, 'log-err');
+                log('Chromium ProcessFrame은 이 갭을 discontinuity로 처리하여 SourceBuffer를 리셋합니다. 연속 재생이 깨질 수 있습니다.', 'log-warn');
             }
             if (intraFails > 0) {
                 log(`세그먼트 내 DTS 역행 ${intraFails}건 — 오디오/비디오 트랙 자체의 DTS 순서가 깨져 있습니다.`, 'log-err');
@@ -706,12 +758,12 @@ async function run() {
         log('', '');
         log('세그먼트별 상세', 'log-h');
         let tableHtml = '<table class="seg-table"><thead><tr>';
-        tableHtml += '<th>#</th><th>AAC</th><th>Video</th><th>SR</th><th>Audio DTS Range</th><th>Video DTS Range</th><th>Intra</th><th>Merge</th><th>Inter</th><th>판정</th>';
+        tableHtml += '<th>#</th><th>AAC</th><th>Video</th><th>SR</th><th>Audio DTS Range</th><th>Video DTS Range</th><th>Intra</th><th>Merge</th><th>Gap</th><th>Inter</th><th>판정</th>';
         tableHtml += '</tr></thead><tbody>';
 
         for (const r of segResults) {
             if (r.error) {
-                tableHtml += `<tr class="fail"><td>${r.index}</td><td colspan="9" style="color:var(--error)">ERROR: ${r.error}</td></tr>`;
+                tableHtml += `<tr class="fail"><td>${r.index}</td><td colspan="10" style="color:var(--error)">ERROR: ${r.error}</td></tr>`;
                 continue;
             }
             const rowCls = r.ok ? '' : ' class="fail"';
@@ -721,6 +773,9 @@ async function run() {
                 ? `<span class="badge b-fail">${r.audioMono.length + r.videoMono.length}</span>` : '<span class="badge b-ok">OK</span>';
             const mergeBadge = r.merge.violations.length > 0
                 ? `<span class="badge b-fail">${r.merge.violations.length}</span>` : '<span class="badge b-ok">OK</span>';
+            const gapTotal = (r.audioGaps?.length || 0) + (r.videoGaps?.length || 0);
+            const gapBadge = gapTotal > 0
+                ? `<span class="badge b-fail">${gapTotal}</span>` : '<span class="badge b-ok">OK</span>';
             const interBadge = r.disc
                 ? '<span class="badge b-warn">DISC</span>'
                 : r.timelineReset
@@ -729,7 +784,7 @@ async function run() {
                         ? '<span class="badge b-fail">FAIL</span>' : '<span class="badge b-ok">OK</span>';
             const verdict = r.ok ? '<span class="badge b-ok">PASS</span>' : '<span class="badge b-fail">FAIL</span>';
 
-            tableHtml += `<tr${rowCls}><td>${r.index}</td><td>${r.aCount}</td><td>${r.vCount}</td><td>${r.sampleRate}</td><td>${aRange}</td><td>${vRange}</td><td>${intraBadge}</td><td>${mergeBadge}</td><td>${interBadge}</td><td>${verdict}</td></tr>`;
+            tableHtml += `<tr${rowCls}><td>${r.index}</td><td>${r.aCount}</td><td>${r.vCount}</td><td>${r.sampleRate}</td><td>${aRange}</td><td>${vRange}</td><td>${intraBadge}</td><td>${mergeBadge}</td><td>${gapBadge}</td><td>${interBadge}</td><td>${verdict}</td></tr>`;
         }
         tableHtml += '</tbody></table>';
         log(tableHtml, '');
