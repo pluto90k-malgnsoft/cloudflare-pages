@@ -72,7 +72,7 @@
 
 <div class="container">
     <header>
-        <h1>Chromium DTS Sequence Analyzer v1.4</h1>
+        <h1>Chromium DTS Sequence Analyzer v1.5</h1>
         <p class="subtitle">AAC 프레임 레벨 DTS 파싱 — web_media_player_impl.cc:2068 에러 사전 검증</p>
     </header>
 
@@ -261,10 +261,14 @@ function parseTsSegment(uint8) {
     for (const pid of Object.keys(pids)) flushPes(Number(pid));
 
     // ── Extract per-frame DTS ──
-    // Chromium's mp2t_stream_parser emits buffers in PES-based batches.
-    // MergeBufferQueues runs per batch, NOT on the entire segment.
-    // PES-to-PES timeline jumps are handled by ProcessFrame's Reset() (not an error).
-    const result = { audioFrames: [], videoFrames: [], sampleRate: 0, pesBatches: [] };
+    // Chromium's mp2t_stream_parser collects ALL frames into audio_queue/video_queue
+    // then passes them to MergeBufferQueues in ONE call via EmitRemainingBuffers().
+    // Frames are emitted in PES processing order via AudioTimestampHelper.
+    // HLS uses sequence mode (SetSequenceMode(true)), so ProcessFrame handles
+    // DTS gaps/reversals with Reset() + timestampOffset adjustment (not an error).
+    // The ONLY fatal check is MergeBufferQueues failing on non-monotonic DTS
+    // within the audio_queue or video_queue themselves.
+    const result = { audioFrames: [], videoFrames: [], sampleRate: 0, audioPesDts: [] };
 
     for (const [pidStr, info] of Object.entries(pids)) {
         if (info.type === 'audio') {
@@ -272,6 +276,8 @@ function parseTsSegment(uint8) {
                 const frames = parseAdtsFrames(pes.payload, pes.dts);
                 if (frames.sampleRate) result.sampleRate = frames.sampleRate;
                 result.audioFrames.push(...frames.frames);
+                // Track PES DTS for debug
+                result.audioPesDts.push(pes.dts);
             }
         } else if (info.type === 'video') {
             for (const pes of info.pesPackets) {
@@ -279,33 +285,6 @@ function parseTsSegment(uint8) {
                     result.videoFrames.push({ dts: pes.dts, pts: pes.pts });
                 }
             }
-        }
-    }
-
-    // Build PES-aligned batches for MergeBufferQueues simulation.
-    // Each batch = one PES worth of audio frames + concurrent video frames.
-    // This matches how Chromium's MP2T parser calls NewBuffersCB.
-    let audioPesIdx = 0;
-    for (const [pidStr, info] of Object.entries(pids)) {
-        if (info.type === 'audio') {
-            for (const pes of info.pesPackets) {
-                const frames = parseAdtsFrames(pes.payload, pes.dts);
-                const batchAudio = frames.frames;
-                // Collect video frames that fall within this PES time range
-                const batchVideo = [];
-                if (batchAudio.length > 0) {
-                    const batchStart = batchAudio[0].dts;
-                    const batchEnd = batchAudio[batchAudio.length - 1].dts;
-                    // Grab video frames in a reasonable range around this audio batch
-                    for (const vf of result.videoFrames) {
-                        if (vf.dts >= batchStart - 90000 && vf.dts <= batchEnd + 90000) {
-                            batchVideo.push(vf);
-                        }
-                    }
-                }
-                result.pesBatches.push({ audio: batchAudio, video: batchVideo });
-            }
-            break; // only process audio PES for batching
         }
     }
 
@@ -592,73 +571,37 @@ async function run() {
                     log(`${label}: <span style="color:#0891b2">DISCONTINUITY</span> — DTS 검증 리셋 (Chromium SourceBuffer reset)`, 'log-dim');
                 }
 
-                // Chromium's MP2T parser emits buffers in PES-based batches.
-                // MergeBufferQueues runs PER BATCH, not on the entire segment.
-                // PES-to-PES timeline jumps are handled by ProcessFrame Reset() (not error).
-                // So we must check each PES batch independently.
+                // Chromium EmitRemainingBuffers: ALL frames go to MergeBufferQueues at once.
+                // HLS uses sequence mode → ProcessFrame handles DTS gaps with Reset().
+                // Only MergeBufferQueues failure is fatal ("Parsed buffers not in DTS sequence").
                 const sr = data.sampleRate || 44100;
                 const aacFrameTicks = (1024 / sr) * 90000;
 
-                let audioMono = [], videoMono = [];
-                let mergeViolations = [];
-                let audioGaps = [], videoGaps = [];
+                // 1. Intra-track monotonic (audio_queue / video_queue individually)
+                const audioMono = checkMonotonic(data.audioFrames);
+                const videoMono = checkMonotonic(data.videoFrames);
 
-                if (data.pesBatches.length > 0) {
-                    // Check each PES batch independently (matches Chromium behavior)
-                    for (const batch of data.pesBatches) {
-                        const aMono = checkMonotonic(batch.audio);
-                        audioMono.push(...aMono);
-                        const aGaps = checkDtsGaps(batch.audio, aacFrameTicks);
-                        audioGaps.push(...aGaps);
-                        const merge = mergeBufferQueues(batch.audio, batch.video);
-                        mergeViolations.push(...merge.violations);
-                    }
-                } else {
-                    // Fallback: if no batches, check entire segment (audio-only or edge case)
-                    audioMono = checkMonotonic(data.audioFrames);
-                    const merge = mergeBufferQueues(data.audioFrames, data.videoFrames);
-                    mergeViolations = merge.violations;
-                    audioGaps = checkDtsGaps(data.audioFrames, aacFrameTicks);
-                }
+                // 2. MergeBufferQueues: merge A/V and check overall monotonic
+                const mergeResult = mergeBufferQueues(data.audioFrames, data.videoFrames);
+                const mergeViolations = mergeResult.violations;
 
-                // Video intra-check (within each continuous PES group)
-                // Group video frames by timeline continuity (gap > 1s = new group)
-                const vGroups = [];
-                let curVGroup = [];
-                for (let vi = 0; vi < data.videoFrames.length; vi++) {
-                    if (curVGroup.length > 0) {
-                        const vDelta = data.videoFrames[vi].dts - data.videoFrames[vi - 1].dts;
-                        if (vDelta < 0 || vDelta > 90000) {
-                            // Timeline jump — start new group
-                            vGroups.push(curVGroup);
-                            curVGroup = [];
-                        }
-                    }
-                    curVGroup.push(data.videoFrames[vi]);
-                }
-                if (curVGroup.length > 0) vGroups.push(curVGroup);
-                for (const vg of vGroups) {
-                    videoMono.push(...checkMonotonic(vg));
-                }
-
-                // Video gap check per group
+                // 3. DTS gap check (ProcessFrame discontinuity — informational, not fatal in sequence mode)
+                const audioGaps = checkDtsGaps(data.audioFrames, aacFrameTicks);
                 let videoFrameTicks = 3000;
                 if (data.videoFrames.length >= 2) {
                     const vDeltas = [];
-                    for (const vg of vGroups) {
-                        for (let vi = 1; vi < Math.min(vg.length, 20); vi++) {
-                            vDeltas.push(vg[vi].dts - vg[vi - 1].dts);
-                        }
+                    for (let vi = 1; vi < Math.min(data.videoFrames.length, 20); vi++) {
+                        vDeltas.push(data.videoFrames[vi].dts - data.videoFrames[vi - 1].dts);
                     }
                     if (vDeltas.length > 0) {
                         vDeltas.sort((a, b) => a - b);
                         videoFrameTicks = vDeltas[Math.floor(vDeltas.length / 2)];
                     }
                 }
-                for (const vg of vGroups) {
-                    videoGaps.push(...checkDtsGaps(vg, videoFrameTicks));
-                }
+                const videoGaps = checkDtsGaps(data.videoFrames, videoFrameTicks);
 
+                // Only Intra reversal + Merge failure = fatal (causes "Parsed buffers not in DTS sequence")
+                // Gap is informational only (sequence mode handles it via Reset)
                 const intraIssues = audioMono.length + videoMono.length;
                 const mergeIssues = mergeViolations.length;
                 const gapIssues = audioGaps.length + videoGaps.length;
@@ -717,7 +660,9 @@ async function run() {
                     mergeViolationPoints.push({ x: allAudioDts.length + allVideoDts.length, y: v.cur.dts / 90000 });
                 }
 
-                const ok = intraIssues === 0 && mergeIssues === 0 && gapIssues === 0 && !interIssue;
+                // Gap is NOT fatal in HLS sequence mode (ProcessFrame Reset handles it)
+                // Only intra-track reversal + merge failure = "Parsed buffers not in DTS sequence"
+                const ok = intraIssues === 0 && mergeIssues === 0 && !interIssue;
                 const segResult = {
                     index: i, aCount, vCount, sampleRate: data.sampleRate,
                     audioMono, videoMono, mergeViolations, audioGaps, videoGaps, interIssue, ok, disc: isDisc, timelineReset,
@@ -730,6 +675,12 @@ async function run() {
                 const statusIcon = ok ? '<span style="color:var(--success)">PASS</span>' : '<span style="color:var(--error)">FAIL</span>';
                 const jumpNote = timelineReset ? ' <span style="color:#0891b2">[Timeline Jump — offset auto-adjusted]</span>' : '';
                 log(`${label}: ${statusIcon} | AAC: ${aCount} frames, Video: ${vCount} frames | SR: ${data.sampleRate}Hz${jumpNote}`, ok ? 'log-ok' : 'log-err');
+
+                // Show PES DTS order for segments with issues or timeline jumps
+                if (!ok || timelineReset) {
+                    const pesDtsStr = (data.audioPesDts || []).map(d => (d / 90000).toFixed(3) + 's').join(' → ');
+                    if (pesDtsStr) log(`  PES DTS 순서: ${pesDtsStr}`, 'log-dim');
+                }
 
                 if (audioMono.length > 0) {
                     log(`  Audio DTS 역행 ${audioMono.length}건 (세그먼트 내)`, 'log-err');
@@ -844,7 +795,7 @@ async function run() {
                 ? `<span class="badge b-fail">${r.mergeViolations.length}</span>` : '<span class="badge b-ok">OK</span>';
             const gapTotal = (r.audioGaps?.length || 0) + (r.videoGaps?.length || 0);
             const gapBadge = gapTotal > 0
-                ? `<span class="badge b-fail">${gapTotal}</span>` : '<span class="badge b-ok">OK</span>';
+                ? `<span class="badge b-warn">${gapTotal}</span>` : '<span class="badge b-ok">OK</span>';
             const interBadge = r.disc
                 ? '<span class="badge b-warn">DISC</span>'
                 : r.timelineReset
