@@ -9,183 +9,12 @@
     <link rel="stylesheet" href="https://pyscript.net/releases/2023.11.1/core.css" />
     <script type="module" src="https://pyscript.net/releases/2023.11.1/core.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mux.js/6.3.0/mux.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono&display=swap" rel="stylesheet">
-
-    <style>
-        :root {
-            --bg-color: #0f172a;
-            --card-bg: #1e293b;
-            --accent-primary: #38bdf8;
-            --accent-secondary: #818cf8;
-            --text-main: #f1f5f9;
-            --text-dim: #94a3b8;
-            --success: #22c55e;
-            --error: #ef4444;
-            --warning: #f59e0b;
-        }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            font-family: 'Inter', sans-serif;
-            margin: 0;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            min-height: 100vh;
-        }
-
-        .container {
-            width: 100%;
-            max-width: 900px;
-        }
-
-        header {
-            text-align: center;
-            margin-bottom: 40px;
-        }
-
-        h1 {
-            font-weight: 600;
-            letter-spacing: -0.025em;
-            background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 8px;
-        }
-
-        p.subtitle {
-            color: var(--text-dim);
-            font-size: 0.95rem;
-        }
-
-        .card {
-            background: var(--card-bg);
-            border-radius: 16px;
-            padding: 24px;
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            margin-bottom: 24px;
-        }
-
-        .input-group {
-            display: flex;
-            gap: 12px;
-            margin-bottom: 16px;
-        }
-
-        input[type="text"] {
-            flex: 1;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 12px 16px;
-            color: white;
-            font-size: 1rem;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-
-        input[type="text"]:focus {
-            border-color: var(--accent-primary);
-        }
-
-        button {
-            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 12px 24px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.1s, opacity 0.2s;
-        }
-
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .settings {
-            display: flex;
-            gap: 20px;
-            color: var(--text-dim);
-            font-size: 0.85rem;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-
-        label {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        select, input[type="number"] {
-            background: #0f172a;
-            border: 1px solid #334155;
-            color: white;
-            border-radius: 4px;
-            padding: 4px 8px;
-            outline: none;
-        }
-
-        #output-container {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.85rem;
-            line-height: 1.6;
-            max-height: 600px;
-            overflow-y: auto;
-            border-radius: 12px;
-            padding: 20px;
-            background: #020617;
-            border: 1px solid #1e293b;
-        }
-
-        .log-entry { margin-bottom: 8px; border-left: 2px solid #334155; padding-left: 12px; }
-        .log-header { color: var(--accent-primary); font-weight: 600; margin-top: 16px; }
-        .log-success { color: var(--success); }
-        .log-error { color: var(--error); font-weight: 600; }
-        .log-warning { color: var(--warning); }
-        .log-info { color: var(--text-dim); }
-
-        .loading-spinner {
-            display: none;
-            width: 18px;
-            height: 18px;
-            border: 2px solid rgba(255,255,255,0.1);
-            border-top: 2px solid var(--accent-primary);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-        .progress-bar-container {
-            width: 100%;
-            height: 4px;
-            background: #334155;
-            border-radius: 2px;
-            margin-top: 20px;
-            overflow: hidden;
-            display: none;
-        }
-        #progress-bar {
-            width: 0%;
-            height: 100%;
-            background: var(--accent-primary);
-            transition: width 0.3s ease;
-        }
-
-        .cors-hint {
-            font-size: 0.75rem;
-            margin-top: 10px;
-            color: var(--warning);
-            opacity: 0.9;
-        }
-    </style>
+    
+    <!-- External Assets -->
+    <link rel="stylesheet" href="stype/base.css">
+    <script src="js/base.js"></script>
 </head>
 <body>
 
@@ -202,8 +31,12 @@
         </div>
         <div class="settings">
             <label>
-                검사 세그먼트 수: 
-                <input type="number" id="max-segs" value="10" min="1" max="100" style="width: 60px;">
+                시작 Index: 
+                <input type="number" id="start-seg" value="0" min="0" style="width: 50px;">
+            </label>
+            <label>
+                검사 개수: 
+                <input type="number" id="max-segs" value="10" min="1" max="100" style="width: 50px;">
             </label>
             <label>
                 프록시 URL 프리픽스 (선택):
@@ -221,128 +54,16 @@
     </div>
 
     <div id="output-container">
-        <div class="log-info">애플리케이션이 준비되었습니다. M3U8 주소를 입력하고 분석을 시작하세요.</div>
+        <div id="summary-dashboard"></div>
+        <div id="log-content">
+            <div class="log-info">애플리케이션이 준비되었습니다. M3U8 주소를 입력하고 분석을 시작하세요.</div>
+        </div>
     </div>
 </div>
 
 <py-config>
     packages = ["m3u8", "ssl", "certifi"]
 </py-config>
-
-<script>
-    // JS Helper: mux.js extraction
-    window.parseSegmentTimestamps = async (arrayBuffer) => {
-        return new Promise((resolve) => {
-            const uint8 = new Uint8Array(arrayBuffer);
-            const isTs = uint8[0] === 0x47;
-            
-            let video = { firstPts: null, lastPts: null, firstDts: null, lastDts: null };
-            let audio = { firstPts: null, lastPts: null, firstDts: null, lastDts: null };
-            let foundStreamTypes = new Set();
-            
-            if (isTs) {
-                let scrambledCount = 0;
-                
-                for (let i = 0; i < uint8.length - 188; i++) {
-                    if (uint8[i] === 0x47) {
-                        const pusi = (uint8[i + 1] & 0x40) !== 0; 
-                        const scramblingControl = (uint8[i + 3] >> 6) & 0x03;
-                        
-                        if (scramblingControl !== 0) {
-                            scrambledCount++;
-                        }
-                        
-                        if (pusi && scramblingControl === 0) {
-                            const adaptationFieldControl = (uint8[i + 3] >> 4) & 0x03;
-                            let payloadOffset = i + 4;
-                            
-                            if (adaptationFieldControl === 2 || adaptationFieldControl === 3) {
-                                const adaptationLength = uint8[payloadOffset];
-                                payloadOffset += 1 + adaptationLength;
-                            }
-                            
-                            if (payloadOffset < i + 188 - 6) { 
-                                if (uint8[payloadOffset] === 0x00 && uint8[payloadOffset + 1] === 0x00 && uint8[payloadOffset + 2] === 0x01) {
-                                    const streamId = uint8[payloadOffset + 3];
-                                    let target = null;
-                                    
-                                    if (streamId >= 0xE0 && streamId <= 0xEF) target = video;
-                                    else if (streamId >= 0xC0 && streamId <= 0xDF) target = audio;
-                                    
-                                    if (target) {
-                                        foundStreamTypes.add(streamId);
-                                        const ptsDtsIndicator = (uint8[payloadOffset + 7] >> 6) & 0x03;
-                                        
-                                        if (ptsDtsIndicator === 2 || ptsDtsIndicator === 3) {
-                                            let pts = ((uint8[payloadOffset + 9] & 0x0E) * 536870912) +
-                                                      ((uint8[payloadOffset + 10] & 0xFF) * 2097152) +
-                                                      ((uint8[payloadOffset + 11] & 0xFE) * 16384) +
-                                                      ((uint8[payloadOffset + 12] & 0xFF) * 128) +
-                                                      ((uint8[payloadOffset + 13] & 0xFE) / 2);
-                                            
-                                            const ptsSeconds = pts / 90000;
-                                            if (target.firstPts === null || ptsSeconds < target.firstPts) target.firstPts = ptsSeconds;
-                                            if (target.lastPts === null || ptsSeconds > target.lastPts) target.lastPts = ptsSeconds;
-                                            
-                                            if (ptsDtsIndicator === 3) {
-                                                let dts = ((uint8[payloadOffset + 14] & 0x0E) * 536870912) +
-                                                          ((uint8[payloadOffset + 15] & 0xFF) * 2097152) +
-                                                          ((uint8[payloadOffset + 16] & 0xFE) * 16384) +
-                                                          ((uint8[payloadOffset + 17] & 0xFF) * 128) +
-                                                          ((uint8[payloadOffset + 18] & 0xFE) / 2);
-                                                const dtsSeconds = dts / 90000;
-                                                if (target.firstDts === null || dtsSeconds < target.firstDts) target.firstDts = dtsSeconds;
-                                                if (target.lastDts === null || dtsSeconds > target.lastDts) target.lastDts = dtsSeconds;
-                                            } else {
-                                                if (target.firstDts === null || ptsSeconds < target.firstDts) target.firstDts = ptsSeconds;
-                                                if (target.lastDts === null || ptsSeconds > target.lastDts) target.lastDts = ptsSeconds;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        i += 187;
-                    }
-                }
-                
-                if (scrambledCount > 0) {
-                    window.addLog(`[!] 패킷 암호화 블록 감지! 타임스탬프 추출 불가.`, "error");
-                }
-            } else {
-                try {
-                    const dts = muxjs.mp4.Probe.findFirstDts(uint8);
-                    if (typeof dts === 'number' && dts !== -1 && !isNaN(dts)) {
-                        video.firstDts = dts / 90000;
-                        video.firstPts = video.firstDts; 
-                    }
-                } catch(e) {
-                    console.error("fMP4 Probe Error:", e);
-                }
-            }
-            
-            resolve({ 
-                video, 
-                audio, 
-                hasVideo: video.firstPts !== null, 
-                hasAudio: audio.firstPts !== null 
-            });
-        });
-    };
-
-    window.addLog = (msg, type) => {
-        const out = document.getElementById('output-container');
-        const entry = document.createElement('div');
-        entry.className = 'log-entry' + (type ? ' log-' + type : '');
-        entry.innerHTML = msg;
-        out.appendChild(entry);
-        out.scrollTop = out.scrollHeight;
-    };
-
-    window.updateProgress = (percent) => {
-        document.getElementById('progress-bar').style.width = percent + '%';
-    };
-</script>
 
 <py-script>
 import asyncio
@@ -360,7 +81,8 @@ async def start_analysis(event):
     document.getElementById("loader").style.display = "inline-block"
     document.getElementById("status-text").innerText = "분석 시작 중..."
     document.getElementById("progress-container").style.display = "block"
-    document.getElementById("output-container").innerHTML = ""
+    document.getElementById("log-content").innerHTML = ""
+    document.getElementById("summary-dashboard").innerHTML = ""
     window.updateProgress(0)
 
     url = document.getElementById("m3u8-url").value
@@ -369,11 +91,12 @@ async def start_analysis(event):
         reset_ui()
         return
 
+    start_seg = int(document.getElementById("start-seg").value)
     max_segs = int(document.getElementById("max-segs").value)
     proxy_prefix = document.getElementById("proxy-prefix").value.strip()
 
     try:
-        await check_hls_continuity(url, max_segs, proxy_prefix)
+        await check_hls_continuity(url, start_seg, max_segs, proxy_prefix)
     except Exception as e:
         log(f"분석 중 치명적 오류: {str(e)}", "error")
     finally:
@@ -404,7 +127,7 @@ async def fetch_with_proxy(url, prefix):
     except Exception as e:
         raise Exception(f"네트워크/CORS 오류: {final_url[:60]}... ({e})")
 
-async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
+async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix):
     log(f"[*] 분석 시작: {m3u8_url}", "header")
     
     try:
@@ -427,8 +150,16 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
         log("세그먼트 정보를 찾을 수 없습니다.", "error")
         return
 
-    count = min(len(segments), max_segments)
-    log(f"[*] 총 {len(segments)}개 중 {count}개 분석", "info")
+    total_available = len(segments)
+    end_index = min(start_index + max_segments, total_available)
+    target_segments = segments[start_index:end_index]
+    count = len(target_segments)
+    
+    if start_index >= total_available:
+        log(f"시작 인덱스({start_index})가 전체 세그먼트 수({total_available})보다 큽니다.", "error")
+        return
+
+    log(f"[*] 총 {total_available}개 중 {start_index}번부터 {count}개 분석 ({start_index}~{end_index-1})", "info")
     
     # 암호화 확인
     if any(seg.key for seg in segments):
@@ -437,11 +168,13 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
     last_v_dts_end = None
     last_a_dts_end = None
     all_offsets = []
+    analysis_data = [] # 테이블용 데이터 수집
     
     for i in range(count):
+        actual_idx = start_index + i
         document.getElementById("status-text").innerText = f"분석 중 ({i+1}/{count})"
-        seg = segments[i]
-        log(f"Seg {i}: {seg.uri}", "header")
+        seg = target_segments[i]
+        log(f"Seg {actual_idx}: {seg.uri}", "header")
         
         try:
             r = await fetch_with_proxy(seg.absolute_uri, proxy_prefix)
@@ -509,6 +242,19 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
                 if abs(a_diff) > 0.1:
                     log(f"  🎵 Audio Gap/Overlap: {a_diff:.3f}s", "error")
                 
+            # 그래프용 캔버스 생성 및 렌더링
+            canvas_id = f"chart-seg-{actual_idx}"
+            log(f'<div class="chart-wrapper"><canvas id="{canvas_id}"></canvas></div>')
+            window.renderSegmentChart(canvas_id, v.samples, a.samples)
+
+            # 테이블용 데이터 저장
+            analysis_data.append({
+                "index": actual_idx,
+                "v_start": v_start,
+                "a_start": a_start,
+                "offset": v_start - a_start if v_start is not None and a_start is not None else None
+            })
+            
             last_v_dts_end = v.lastPts if v.lastPts is not None else v.lastDts
             last_a_dts_end = a.lastPts if a.lastPts is not None else a.lastDts
             
@@ -516,28 +262,94 @@ async def check_hls_continuity(m3u8_url, max_segments, proxy_prefix):
         except Exception as e:
             log(f"  [!] 세그먼트 오류: {e}", "error")
 
-    # 요약 레포트
+    # 요약 레포트 및 테이블 출력
     if all_offsets:
         avg_offset = sum(all_offsets) / len(all_offsets)
         max_offset = max([abs(o) for o in all_offsets])
         variance = max(all_offsets) - min(all_offsets)
         
-        log(f"[*] 분석 완료 요약", "header")
-        log(f"  - 평균 A/V Offset: {avg_offset*1000:.1f}ms", "info")
-        log(f"  - 최대 A/V Offset: {max_offset*1000:.1f}ms", "warning" if max_offset > 0.06 else "info")
-        log(f"  - Offset 변동폭(Jitter): {variance*1000:.1f}ms", "error" if variance > 0.05 else "info")
+        # FFMPEG 옵션(-async 1 / aresample=async=1) 적용 판단
+        # 특징: 모든 세그먼트에서 V/A 시작 지점이 1ms 이하로 일치하거나, Jitter가 거의 없음
+        is_ffmpeg_async = max_offset < 0.002 and variance < 0.001
         
+        # 대시보드 출력용 변수 사전 준비
+        status_label = "정상"
+        status_color = "var(--success)"
         if max_offset > 0.1:
-            log("  ❗ 결론: 심각한 A/V 싱크 오류 감지. Android Chrome에서 재생 실패 가능성이 매우 높습니다.", "error")
-        elif variance > 0.1 or max_offset > 0.08:
-            log("  ❗ 결론: 싱크가 불안정합니다. FFMPEG aresample=async=1 옵션 적용을 권장합니다.", "warning")
-        elif avg_offset < 0.01:
-            log("  ✅ 결론: A/V 싱크가 매우 안정적입니다. (Perfect Match)", "success")
-        elif max_offset < 0.07:
-            log("  ✅ 결론: A/V 싱크가 안정적인 수준입니다. (Android Chrome 안전 구간)", "success")
-        else:
-            log("  ✅ 결론: 싱크가 일정한 편입니다. (Constant delay)", "success")
-    
+            status_label = "위험 (재생불가 가능성)"
+            status_color = "var(--error)"
+        elif max_offset > 0.06 or variance > 0.05:
+            status_label = "주의 (싱크 불안정)"
+            status_color = "var(--warning)"
+            
+        avg_offset_ms = f"{avg_offset*1000:.1f}ms"
+        ffmpeg_badge = "✅ 적용됨" if is_ffmpeg_async else "❌ 미감지"
+
+        # f-string 대신 문자열 더하기(+) 사용 (IDE 린트 오류 및 파싱 이슈 완전 방지)
+        dashboard_html = '<div class="result-dashboard">'
+        dashboard_html += '    <div class="stat-card">'
+        dashboard_html += '        <div class="stat-label">최종 상태</div>'
+        dashboard_html += '        <div class="stat-value" style="color: ' + status_color + '">' + status_label + '</div>'
+        dashboard_html += '    </div>'
+        dashboard_html += '    <div class="stat-card">'
+        dashboard_html += '        <div class="stat-label">평균 Offset</div>'
+        dashboard_html += '        <div class="stat-value">' + avg_offset_ms + '</div>'
+        dashboard_html += '    </div>'
+        dashboard_html += '    <div class="stat-card">'
+        dashboard_html += '        <div class="stat-label">FFMPEG 옵션 감지</div>'
+        dashboard_html += '        <div class="stat-value">' + ffmpeg_badge + '</div>'
+        dashboard_html += '    </div>'
+        dashboard_html += '</div>'
+        
+        document.getElementById("summary-dashboard").innerHTML = dashboard_html
+        
+        log(f"[*] 분석 완료 요약", "header")
+        
+        # 상세 데이터 테이블 생성
+        table_html = """
+        <table class="summary-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Video Start (s)</th>
+                    <th>Audio Start (s)</th>
+                    <th>A/V Offset (ms)</th>
+                    <th>상태</th>
+                </tr>
+            </thead>
+            <tbody>
+        """
+        for row in analysis_data:
+            idx = row['index']
+            v_s = f"{row['v_start']:.3f}" if row['v_start'] is not None else "-"
+            a_s = f"{row['a_start']:.3f}" if row['a_start'] is not None else "-"
+            off_val = row['offset']
+            off_str = "-"
+            badge = ""
+            
+            if off_val is not None:
+                off_ms = off_val * 1000
+                off_str = f"{off_ms:.1f}ms"
+                if abs(off_val) < 0.01: badge = '<span class="badge badge-success">Synced</span>'
+                elif abs(off_val) < 0.06: badge = '<span class="badge badge-warning">Small Skew</span>'
+                else: badge = '<span class="badge badge-error">Critical</span>'
+            
+            table_html += '                <tr>'
+            table_html += '                    <td>' + str(idx) + '</td>'
+            table_html += '                    <td>' + v_s + '</td>'
+            table_html += '                    <td>' + a_s + '</td>'
+            table_html += '                    <td>' + off_str + '</td>'
+            table_html += '                    <td>' + badge + '</td>'
+            table_html += '                </tr>'
+        table_html += "</tbody></table>"
+        log(table_html)
+
+        # 팁 추가
+        if is_ffmpeg_async:
+            log("💡 <b>진단 결과:</b> FFMPEG의 오디오 동기화 옵션이 정상적으로 작동하고 있는 것으로 보입니다. 비디오와 오디오의 시작점이 매칭되어 있습니다.", "success")
+        elif max_offset > 0.06:
+            log("💡 <b>권장 작업:</b> 현재 싱크 차이가 큽니다. FFMPEG 사용 시 <code>-async 1</code> 또는 <code>aresample=async=1</code> 옵션을 추가하여 오디오 시작점을 비디오에 맞추는 것을 권장합니다.", "warning")
+
     log("[*] 모든 분석 완료", "header")
 </py-script>
 
