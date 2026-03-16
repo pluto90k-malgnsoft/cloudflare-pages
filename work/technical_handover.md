@@ -38,7 +38,16 @@
   3. 회복 기간 종료 후 스트림이 동적 격자 패턴 내로 복귀하면 `STABLE AFTER GAP` 판정.
 - **효과**: 소스의 물리적 끊김과 소프트웨어적 인코딩 설정 오류를 완벽하게 분리 진단.
 
-### D. 규칙성(Predictability) 및 복구력 분석
+### D. Aresample(async=1) 적용 여부 감지 (v2.1)
+- **배경**: FFmpeg의 `-af aresample=async=1` 옵션은 오디오 타임스탬프의 연속성을 강제 보장(갭→무음 삽입, 겹침→트리밍)하며, 안드로이드 크롬 재생 여부를 결정하는 핵심 인코딩 옵션.
+- **3대 분석 지표**:
+  1. **Audio Continuity Gap**: 세그먼트 N의 마지막 오디오 PTS → 세그먼트 N+1의 첫 오디오 PTS 간 간격. 정상: ~21-23ms(AAC 1프레임), 이상: >50ms 또는 음수(겹침).
+  2. **Duration Mismatch**: 세그먼트 내 오디오 실제 duration(`lastPTS - firstPTS`) vs m3u8 `#EXTINF` 선언 duration. 정상: <30ms 편차, 이상: >30ms.
+  3. **Intra-segment Audio PTS StdDev**: 세그먼트 내 오디오 PES 패킷 간 PTS 간격의 표준편차. 정상: <2ms, 이상: >2ms.
+- **판정 로직**: 3개 지표 중 하나라도 임계값 초과 시 `aresample=async=1 미적용 의심` 판정.
+- **UI**: 대시보드에 `Aresample 판정` 카드, 테이블에 `A-Gap` 컬럼 및 `AUDIO-GAP`/`DUR-DRIFT` 배지, 전용 진단 보고서 섹션 추가.
+
+### E. 규칙성(Predictability) 및 복구력 분석
 - **변화량의 변화량(Diff of Diff)**: 연속된 세그먼트 간 지터의 차이가 1.5ms 이내인 경우 '격자 정렬(Grid Aligned)' 상태로 판단.
 - **GAP 복구력**: 타임라인 불연속(Gap) 발생 이후, 몇 개의 세그먼트 내에 다시 안정적인 격자 패턴으로 복구되는지 측정.
 
@@ -56,6 +65,7 @@
 | **v1.8** | ZCR & 동적 격자 | 영점 교차율(ZCR) 및 통계적 격자 추출 도입 |
 | **v1.9** | GAP 면역 체계 | GAP 이후 3개 세그먼트 면역 및 복구 판정 도입 |
 | **v2.0** | **타임라인 무결성** | 시간 역행(Backward Jump) 감지 및 최우선 FATAL 리포트 |
+| **v2.1** | **Aresample 감지** | `-af aresample=async=1` 적용 여부 자동 판별 및 3대 지표 분석 |
 
 ---
 

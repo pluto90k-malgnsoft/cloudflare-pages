@@ -92,11 +92,36 @@ window.parseSegmentTimestamps = async (arrayBuffer) => {
             }
         }
         
-        resolve({ 
-            video, 
-            audio, 
-            hasVideo: video.firstPts !== null, 
-            hasAudio: audio.firstPts !== null 
+        // v2.1: Aresample 분석용 세그먼트 내 오디오 통계 계산
+        if (audio.samples.pts.length >= 2) {
+            const sorted = [...audio.samples.pts].sort((a, b) => a - b);
+            audio.actualDuration = sorted[sorted.length - 1] - sorted[0];
+            const intervals = [];
+            for (let k = 1; k < sorted.length; k++) {
+                intervals.push(sorted[k] - sorted[k - 1]);
+            }
+            const mean = intervals.reduce((s, v) => s + v, 0) / intervals.length;
+            audio.avgInterval = mean;
+            const variance = intervals.reduce((s, v) => s + (v - mean) ** 2, 0) / intervals.length;
+            audio.intervalStdDev = Math.sqrt(variance);
+        } else {
+            audio.actualDuration = 0;
+            audio.avgInterval = 0;
+            audio.intervalStdDev = 0;
+        }
+
+        if (video.samples.pts.length >= 2) {
+            const sorted = [...video.samples.pts].sort((a, b) => a - b);
+            video.actualDuration = sorted[sorted.length - 1] - sorted[0];
+        } else {
+            video.actualDuration = 0;
+        }
+
+        resolve({
+            video,
+            audio,
+            hasVideo: video.firstPts !== null,
+            hasAudio: audio.firstPts !== null
         });
     });
 };

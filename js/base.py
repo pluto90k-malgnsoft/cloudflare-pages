@@ -103,6 +103,9 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
     all_raw_diffs = [] # 방향을 포함한 원시 변화량
     analysis_data = [] # 테이블용 데이터 수집
     last_gap_index = -1 # 마지막 GAP 발생 위치
+    all_audio_gaps = []  # 세그먼트 간 오디오 연속성 갭
+    all_dur_mismatches = []  # 오디오 실제 duration vs 선언 duration 차이
+    all_audio_stddevs = []  # 세그먼트 내 오디오 PTS 간격 표준편차
     
     for i in range(count):
         actual_idx = start_index + i
@@ -120,6 +123,11 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             
             v_start = v.firstPts if v.firstPts is not None else v.firstDts
             a_start = a.firstPts if a.firstPts is not None else a.firstDts
+
+            # v2.1: Aresample 분석 데이터 추출
+            seg_duration = seg.duration
+            audio_actual_dur = float(a.actualDuration) if a.actualDuration else 0
+            audio_pts_stddev = float(a.intervalStdDev) if a.intervalStdDev else 0
             
             # A/V Offset 및 Gap 확인
             offset = None
@@ -185,6 +193,20 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             log('<div class="chart-wrapper"><canvas id="' + canvas_id + '"></canvas></div>')
             window.renderSegmentChart(canvas_id, v.samples, a.samples)
 
+            # v2.1: 세그먼트 간 오디오 연속성 분석
+            audio_cont_gap = None
+            if last_a_dts_end is not None and a_start is not None:
+                audio_cont_gap = a_start - last_a_dts_end
+                all_audio_gaps.append(audio_cont_gap)
+
+            audio_dur_mismatch = None
+            if audio_actual_dur > 0 and seg_duration:
+                audio_dur_mismatch = audio_actual_dur - seg_duration
+                all_dur_mismatches.append(audio_dur_mismatch)
+
+            if audio_pts_stddev > 0:
+                all_audio_stddevs.append(audio_pts_stddev)
+
             # 테이블용 데이터 저장
             analysis_data.append({
                 "index": actual_idx,
@@ -193,7 +215,10 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 "offset": offset,
                 "raw_diff": raw_diff,
                 "consistent": is_consistent,
-                "gap": has_gap
+                "gap": has_gap,
+                "audio_cont_gap": audio_cont_gap,
+                "audio_dur_mismatch": audio_dur_mismatch,
+                "audio_pts_stddev": audio_pts_stddev
             })
             
             last_v_dts_end = v.lastPts if v.lastPts is not None else v.lastDts
@@ -217,6 +242,25 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             counts = Counter(jitters)
             grid_ms, _ = counts.most_common(1)[0]
         
+        # v2.1: Aresample(async=1) 적용 여부 분석
+        avg_audio_gap = 0
+        max_audio_gap = 0
+        avg_dur_mismatch = 0
+        max_dur_mismatch = 0
+        avg_audio_stddev = 0
+
+        if all_audio_gaps:
+            avg_audio_gap = sum([abs(g) for g in all_audio_gaps]) / len(all_audio_gaps)
+            max_audio_gap = max([abs(g) for g in all_audio_gaps])
+        if all_dur_mismatches:
+            avg_dur_mismatch = sum([abs(m) for m in all_dur_mismatches]) / len(all_dur_mismatches)
+            max_dur_mismatch = max([abs(m) for m in all_dur_mismatches])
+        if all_audio_stddevs:
+            avg_audio_stddev = sum(all_audio_stddevs) / len(all_audio_stddevs)
+
+        # Aresample 판정: 평균 오디오 갭 > 50ms 또는 평균 duration 편차 > 30ms → 미적용 의심
+        aresample_missing = (avg_audio_gap > 0.05) or (avg_dur_mismatch > 0.03) or (avg_audio_stddev > 0.002)
+
         # v2.0: 타임라인 무결성(Timeline Monotonicity) 체크
         backward_jump_detected = False
         large_gap_detected = False
@@ -288,6 +332,9 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         elif large_gap_detected:
             status_label = "치명적 결함 (거대 GAP)"
             status_color = "var(--error)"
+        elif aresample_missing:
+            status_label = "위험 (Aresample 미적용)"
+            status_color = "var(--error)"
         elif has_any_gap and is_grid_stable:
             status_label = "정상 (복구됨)"
             status_color = "var(--success)"
@@ -313,13 +360,27 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         dashboard_html += '        <div class="stat-label">추정 격자(Grid)</div>'
         dashboard_html += '        <div class="stat-value">' + ('{:.1f}ms'.format(grid_ms) if grid_ms > 0 else "N/A") + '</div>'
         dashboard_html += '    </div>'
+        dashboard_html += '    <div class="stat-card">'
+        dashboard_html += '        <div class="stat-label">Audio 연속성 Gap</div>'
+        dashboard_html += '        <div class="stat-value">' + ('{:.1f}ms'.format(avg_audio_gap * 1000) if all_audio_gaps else "N/A") + '</div>'
+        dashboard_html += '    </div>'
+        dashboard_html += '    <div class="stat-card">'
+        dashboard_html += '        <div class="stat-label">Duration 편차</div>'
+        dashboard_html += '        <div class="stat-value">' + ('{:.1f}ms'.format(avg_dur_mismatch * 1000) if all_dur_mismatches else "N/A") + '</div>'
+        dashboard_html += '    </div>'
+        dashboard_html += '    <div class="stat-card">'
+        dashboard_html += '        <div class="stat-label">Aresample 판정</div>'
+        aresample_color = "var(--error)" if aresample_missing else "var(--success)"
+        aresample_text = "미적용 의심" if aresample_missing else "적용됨"
+        dashboard_html += '        <div class="stat-value" style="color: ' + aresample_color + '">' + aresample_text + '</div>'
+        dashboard_html += '    </div>'
         dashboard_html += '</div>'
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v2.0)', 'header')
+        log('[*] 분석 상세 결과 (v2.1)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
-        table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>상세</th>'
+        table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>A-Gap</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
         
         for idx, row in enumerate(analysis_data):
@@ -367,12 +428,20 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             
             # 행 스타일 추가 (타임라인 위반 시 강조)
             row_style = ' style="background: rgba(244, 63, 94, 0.1)"' if is_backward else ""
-            table_html += '<tr' + row_style + '><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + badge + '</td></tr>'
+            # v2.1: Audio Gap / Duration Drift 배지
+            a_gap_val = row.get('audio_cont_gap')
+            a_gap_str = '{:.1f}ms'.format(a_gap_val * 1000) if a_gap_val is not None else "-"
+            if a_gap_val is not None and abs(a_gap_val) > 0.05:
+                badge += ' <span class="badge" style="background: #7c3aed">AUDIO-GAP</span>'
+            if row.get('audio_dur_mismatch') is not None and abs(row['audio_dur_mismatch']) > 0.03:
+                badge += ' <span class="badge" style="background: #ea580c">DUR-DRIFT</span>'
+
+            table_html += '<tr' + row_style + '><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + a_gap_str + '</td><td>' + badge + '</td></tr>'
         table_html += "</tbody></table>"
         log(table_html)
 
         # 스마트 진단 가이드 (v2.0)
-        log("[*] 스마트 진단 보고서 (v2.0)", "header")
+        log("[*] 스마트 진단 보고서 (v2.1)", "header")
         if backward_jump_detected:
             log("🚫 <b>FATAL: TIMELINE REVERSAL (재생 불가):</b> 시간이 과거로 역행하는 치명적인 오류가 포착되었습니다. " + jump_info + " 안드로이드 하드웨어 디코더는 이 지점에서 재생을 중단합니다. 소스 머징(Merging) 과정의 결함이 의심됩니다.", "error")
         elif large_gap_detected:
@@ -385,5 +454,26 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             log("🚫 <b>FATAL OSCILLATION (위험):</b> 연속 비트스트림 내에서 제어가 불가능한 진동이 감지되었습니다. 버퍼 결함을 유발하는 핵심 요인입니다.", "error")
         else:
             log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 대체로 양호합니다. (타임라인 무결성 확보됨)", "info")
+
+        # v2.1: Aresample 전용 진단 보고서
+        log("[*] Aresample(async=1) 분석 보고서 (v2.1)", "header")
+        if aresample_missing:
+            evidence = []
+            if avg_audio_gap > 0.05:
+                evidence.append("평균 오디오 연속성 Gap: {:.1f}ms (기준: &lt;50ms)".format(avg_audio_gap * 1000))
+            if avg_dur_mismatch > 0.03:
+                evidence.append("평균 Duration 편차: {:.1f}ms (기준: &lt;30ms)".format(avg_dur_mismatch * 1000))
+            if avg_audio_stddev > 0.002:
+                evidence.append("평균 오디오 PTS 간격 편차: {:.3f}ms (기준: &lt;2ms)".format(avg_audio_stddev * 1000))
+            log("🚫 <b>aresample=async=1 미적용 의심:</b> 오디오 타임스탬프 연속성이 확보되지 않았습니다. FFmpeg 인코딩 시 <code>-af aresample=async=1</code> 옵션 적용을 권장합니다.", "error")
+            for ev in evidence:
+                log("  → " + ev, "warning")
+            log("ℹ️ <b>영향:</b> 안드로이드 크롬의 MSE/MediaCodec은 오디오 타임스탬프의 연속성을 엄격히 요구합니다. 이 옵션 없이는 오디오 디코더가 갭/겹침을 처리하지 못해 재생이 중단될 수 있습니다.", "info")
+        else:
+            log("✅ <b>aresample=async=1 적용 확인:</b> 오디오 타임스탬프가 연속적이며 세그먼트 간 정상적인 연결이 확인되었습니다.", "success")
+            if all_audio_gaps:
+                log("  → 평균 오디오 연속성 Gap: {:.1f}ms / 최대: {:.1f}ms".format(avg_audio_gap * 1000, max_audio_gap * 1000), "info")
+            if all_dur_mismatches:
+                log("  → 평균 Duration 편차: {:.1f}ms / 최대: {:.1f}ms".format(avg_dur_mismatch * 1000, max_dur_mismatch * 1000), "info")
 
     log("[*] 모든 분석 완료", "header")
