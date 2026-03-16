@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chromium DTS Sequence Analyzer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --accent: #38bdf8;
+            --accent2: #818cf8;
+            --text: #f1f5f9;
+            --dim: #94a3b8;
+            --success: #22c55e;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --mono: 'JetBrains Mono', monospace;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        .container { width: 100%; max-width: 1100px; }
+        header { text-align: center; margin-bottom: 32px; }
+        h1 { font-weight: 700; background: linear-gradient(to right, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 6px; font-size: 1.6rem; }
+        .subtitle { color: var(--dim); font-size: 0.9rem; }
+        .card { background: var(--card); border-radius: 16px; padding: 24px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); margin-bottom: 20px; }
+        .input-row { display: flex; gap: 12px; margin-bottom: 12px; }
+        .input-row input[type="text"] { flex: 1; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; color: white; font-size: 0.95rem; outline: none; }
+        .input-row input[type="text"]:focus { border-color: var(--accent); }
+        button { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: white; border: none; border-radius: 8px; padding: 12px 24px; font-weight: 600; cursor: pointer; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .settings { display: flex; gap: 16px; color: var(--dim); font-size: 0.82rem; align-items: center; flex-wrap: wrap; }
+        .settings label { display: flex; align-items: center; gap: 6px; }
+        .settings input[type="number"] { background: #0f172a; border: 1px solid #334155; color: white; border-radius: 4px; padding: 4px 8px; width: 55px; outline: none; }
+        .settings input[type="text"] { background: #0f172a; border: 1px solid #334155; color: white; border-radius: 4px; padding: 4px 8px; outline: none; }
+
+        .progress-wrap { width: 100%; height: 4px; background: #334155; border-radius: 2px; margin-top: 16px; overflow: hidden; display: none; }
+        .progress-bar { width: 0%; height: 100%; background: var(--accent); transition: width 0.3s; }
+
+        /* Dashboard */
+        .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .stat { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); padding: 16px; border-radius: 12px; text-align: center; }
+        .stat-val { font-size: 1.3rem; font-weight: 700; color: var(--accent); }
+        .stat-lbl { font-size: 0.7rem; color: var(--dim); margin-top: 4px; text-transform: uppercase; }
+
+        /* Log */
+        #log { font-family: var(--mono); font-size: 0.82rem; line-height: 1.7; max-height: 500px; overflow-y: auto; border-radius: 12px; padding: 16px; background: #020617; border: 1px solid #1e293b; }
+        .log-h { color: var(--accent); font-weight: 700; margin-top: 14px; }
+        .log-ok { color: var(--success); }
+        .log-err { color: var(--error); font-weight: 700; }
+        .log-warn { color: var(--warning); }
+        .log-dim { color: var(--dim); }
+        .log-line { margin-bottom: 4px; border-left: 2px solid #334155; padding-left: 10px; }
+
+        /* Segment detail table */
+        .seg-table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 0.78rem; font-family: var(--mono); }
+        .seg-table th, .seg-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1e293b; }
+        .seg-table th { background: #1e293b; color: var(--accent); position: sticky; top: 0; }
+        .seg-table tr.fail { background: rgba(239,68,68,0.08); }
+        .badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-weight: 700; font-size: 0.7rem; }
+        .b-ok { background: rgba(34,197,94,0.15); color: var(--success); }
+        .b-fail { background: rgba(239,68,68,0.15); color: var(--error); }
+        .b-warn { background: rgba(245,158,11,0.15); color: var(--warning); }
+
+        /* Chart */
+        .chart-box { background: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px; margin-top: 16px; height: 280px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Chromium DTS Sequence Analyzer</h1>
+        <p class="subtitle">AAC 프레임 레벨 DTS 파싱 — web_media_player_impl.cc:2068 에러 사전 검증</p>
+    </header>
+
+    <div class="card">
+        <div class="input-row">
+            <input type="text" id="url" placeholder="HLS(.m3u8) 주소를 입력하세요">
+            <button id="btn" onclick="run()">분석 시작</button>
+        </div>
+        <div class="settings">
+            <label>시작: <input type="number" id="start" value="0" min="0"></label>
+            <label>개수: <input type="number" id="count" value="10" min="1" max="200"></label>
+            <label>프록시: <input type="text" id="proxy" value="https://cloudflare-proxy.pluto90k.workers.dev/?url=" style="width:240px"></label>
+        </div>
+        <div class="progress-wrap" id="pw"><div class="progress-bar" id="pb"></div></div>
+    </div>
+
+    <div class="dashboard" id="dash" style="display:none">
+        <div class="stat"><div class="stat-val" id="s-segs">0</div><div class="stat-lbl">세그먼트</div></div>
+        <div class="stat"><div class="stat-val" id="s-aac">0</div><div class="stat-lbl">AAC 프레임</div></div>
+        <div class="stat"><div class="stat-val" id="s-vf">0</div><div class="stat-lbl">Video 프레임</div></div>
+        <div class="stat"><div class="stat-val" id="s-intra" style="color:var(--success)">0</div><div class="stat-lbl">세그먼트 내 위반</div></div>
+        <div class="stat"><div class="stat-val" id="s-merge" style="color:var(--success)">0</div><div class="stat-lbl">A/V 병합 위반</div></div>
+        <div class="stat"><div class="stat-val" id="s-inter" style="color:var(--success)">0</div><div class="stat-lbl">세그먼트 간 위반</div></div>
+        <div class="stat"><div class="stat-val" id="s-verdict" style="color:var(--success)">-</div><div class="stat-lbl">Chromium 판정</div></div>
+    </div>
+
+    <div class="card" id="chart-card" style="display:none">
+        <div style="color:var(--accent);font-weight:700;margin-bottom:8px;">DTS Timeline (전체 세그먼트)</div>
+        <div class="chart-box" style="height:350px"><canvas id="dts-chart"></canvas></div>
+    </div>
+
+    <div id="log"></div>
+</div>
+
+<script>
+// ── Utility ──
+const $ = id => document.getElementById(id);
+function log(msg, cls = '') { const d = document.createElement('div'); d.className = 'log-line' + (cls ? ' ' + cls : ''); d.innerHTML = msg; $('log').appendChild(d); $('log').scrollTop = $('log').scrollHeight; }
+function progress(p) { $('pb').style.width = p + '%'; }
+
+// ── ADTS sample rate table (ISO 14496-3) ──
+const ADTS_SAMPLE_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+
+// ── TS Packet Parser: full PES reassembly + AAC frame extraction ──
+function parseTsSegment(uint8) {
+    const PKT = 188;
+    const pids = {};       // pid -> { type: 'video'|'audio'|null, buf: [], pesDts: null, pesPts: null }
+    const pmtPids = new Set();
+    const streamPids = {}; // pid -> streamType
+
+    // Pass 1: find PAT -> PMT -> stream PIDs
+    for (let i = 0; i <= uint8.length - PKT; i += PKT) {
+        if (uint8[i] !== 0x47) continue;
+        const pid = ((uint8[i + 1] & 0x1F) << 8) | uint8[i + 2];
+
+        // PAT (PID 0)
+        if (pid === 0) {
+            const pusi = uint8[i + 1] & 0x40;
+            let off = i + 4;
+            if (uint8[i + 3] & 0x20) off += 1 + uint8[i + 4]; // adaptation
+            if (pusi) off += 1 + uint8[off]; // pointer field
+            // skip table header (8 bytes minimum)
+            off += 8;
+            const sectionEnd = Math.min(i + PKT, uint8.length);
+            while (off + 4 <= sectionEnd) {
+                const progNum = (uint8[off] << 8) | uint8[off + 1];
+                const pmtPid = ((uint8[off + 2] & 0x1F) << 8) | uint8[off + 3];
+                if (progNum !== 0) pmtPids.add(pmtPid);
+                off += 4;
+            }
+        }
+
+        // PMT
+        if (pmtPids.has(pid)) {
+            const pusi = uint8[i + 1] & 0x40;
+            let off = i + 4;
+            if (uint8[i + 3] & 0x20) off += 1 + uint8[i + 4];
+            if (pusi) off += 1 + uint8[off];
+            // table_id(1) + flags(2) + program_number(2) + flags(1) + section(1) + last_section(1) + pcr_pid(2) + program_info_length(2)
+            const sectionLength = ((uint8[off + 1] & 0x0F) << 8) | uint8[off + 2];
+            const programInfoLen = ((uint8[off + 10] & 0x0F) << 8) | uint8[off + 11];
+            let esOff = off + 12 + programInfoLen;
+            const esEnd = off + 3 + sectionLength - 4; // -4 for CRC
+            while (esOff + 5 <= esEnd && esOff < i + PKT) {
+                const sType = uint8[esOff];
+                const ePid = ((uint8[esOff + 1] & 0x1F) << 8) | uint8[esOff + 2];
+                const esInfoLen = ((uint8[esOff + 3] & 0x0F) << 8) | uint8[esOff + 4];
+                streamPids[ePid] = sType;
+                esOff += 5 + esInfoLen;
+            }
+        }
+    }
+
+    // Classify PIDs
+    for (const [pidStr, sType] of Object.entries(streamPids)) {
+        const p = Number(pidStr);
+        let type = null;
+        // Video: H.264(0x1B), H.265(0x24), MPEG-2(0x02), MPEG-1(0x01)
+        if (sType === 0x1B || sType === 0x24 || sType === 0x02 || sType === 0x01) type = 'video';
+        // Audio: AAC(0x0F), ADTS-AAC(0x11), MP3(0x03/0x04)
+        else if (sType === 0x0F || sType === 0x11 || sType === 0x03 || sType === 0x04) type = 'audio';
+        if (type) pids[p] = { type, pesPackets: [] };
+    }
+
+    // Fallback: if PMT parsing failed, use stream ID heuristic
+    if (Object.keys(pids).length === 0) {
+        // scan for PES start codes and classify by stream_id
+        for (let i = 0; i <= uint8.length - PKT; i += PKT) {
+            if (uint8[i] !== 0x47) continue;
+            const pid = ((uint8[i + 1] & 0x1F) << 8) | uint8[i + 2];
+            const pusi = uint8[i + 1] & 0x40;
+            if (!pusi || pid === 0 || pmtPids.has(pid)) continue;
+            let off = i + 4;
+            if (uint8[i + 3] & 0x20) off += 1 + uint8[i + 4];
+            if (off + 4 < i + PKT && uint8[off] === 0 && uint8[off + 1] === 0 && uint8[off + 2] === 1) {
+                const sid = uint8[off + 3];
+                let type = null;
+                if (sid >= 0xE0 && sid <= 0xEF) type = 'video';
+                else if (sid >= 0xC0 && sid <= 0xDF) type = 'audio';
+                if (type && !pids[pid]) pids[pid] = { type, pesPackets: [] };
+            }
+        }
+    }
+
+    // Pass 2: reassemble PES packets per PID
+    const pidBuffers = {}; // pid -> { chunks: [], dts: null, pts: null }
+
+    function flushPes(pid) {
+        const pb = pidBuffers[pid];
+        if (!pb || pb.chunks.length === 0) return;
+        // Concatenate chunks
+        let totalLen = 0;
+        for (const c of pb.chunks) totalLen += c.length;
+        const payload = new Uint8Array(totalLen);
+        let off = 0;
+        for (const c of pb.chunks) { payload.set(c, off); off += c.length; }
+        pids[pid].pesPackets.push({ payload, dts: pb.dts, pts: pb.pts });
+        pidBuffers[pid] = null;
+    }
+
+    for (let i = 0; i <= uint8.length - PKT; i += PKT) {
+        if (uint8[i] !== 0x47) continue;
+        const pid = ((uint8[i + 1] & 0x1F) << 8) | uint8[i + 2];
+        if (!pids[pid]) continue;
+
+        const pusi = uint8[i + 1] & 0x40;
+        const afc = (uint8[i + 3] >> 4) & 0x03;
+        let off = i + 4;
+        if (afc === 2 || afc === 3) off += 1 + uint8[i + 4];
+        if (afc === 2) continue; // no payload
+
+        if (pusi) {
+            // Flush previous PES
+            flushPes(pid);
+
+            // Parse PES header
+            if (off + 9 < i + PKT && uint8[off] === 0 && uint8[off + 1] === 0 && uint8[off + 2] === 1) {
+                const ptsDtsFlag = (uint8[off + 7] >> 6) & 0x03;
+                const pesHeaderLen = uint8[off + 8];
+                let pts = null, dts = null;
+
+                if (ptsDtsFlag >= 2) {
+                    pts = extractTs(uint8, off + 9);
+                    if (ptsDtsFlag === 3) {
+                        dts = extractTs(uint8, off + 14);
+                    } else {
+                        dts = pts;
+                    }
+                }
+
+                const dataStart = off + 9 + pesHeaderLen;
+                pidBuffers[pid] = { chunks: [], dts, pts };
+                if (dataStart < i + PKT) {
+                    pidBuffers[pid].chunks.push(uint8.slice(dataStart, i + PKT));
+                }
+            }
+        } else {
+            // Continuation
+            if (pidBuffers[pid]) {
+                pidBuffers[pid].chunks.push(uint8.slice(off, i + PKT));
+            }
+        }
+    }
+    // Flush remaining
+    for (const pid of Object.keys(pids)) flushPes(Number(pid));
+
+    // ── Extract per-frame DTS ──
+    const result = { audioFrames: [], videoFrames: [], sampleRate: 0 };
+
+    for (const [pidStr, info] of Object.entries(pids)) {
+        if (info.type === 'audio') {
+            for (const pes of info.pesPackets) {
+                const frames = parseAdtsFrames(pes.payload, pes.dts);
+                if (frames.sampleRate) result.sampleRate = frames.sampleRate;
+                result.audioFrames.push(...frames.frames);
+            }
+        } else if (info.type === 'video') {
+            for (const pes of info.pesPackets) {
+                if (pes.dts !== null) {
+                    result.videoFrames.push({ dts: pes.dts, pts: pes.pts });
+                }
+            }
+        }
+    }
+
+    // Sort by DTS within each track
+    result.audioFrames.sort((a, b) => a.dts - b.dts);
+    result.videoFrames.sort((a, b) => a.dts - b.dts);
+
+    return result;
+}
+
+// Extract 33-bit MPEG-TS timestamp from 5 bytes
+function extractTs(buf, off) {
+    return ((buf[off] & 0x0E) * 536870912) +  // (val & 0x0E) << 29
+           ((buf[off + 1] & 0xFF) * 2097152) + // << 22 but combined
+           ((buf[off + 2] & 0xFE) * 16384) +
+           ((buf[off + 3] & 0xFF) * 128) +
+           ((buf[off + 4] & 0xFE) / 2);
+}
+
+// Parse ADTS frames within a PES payload, compute per-frame DTS
+function parseAdtsFrames(payload, pesDts) {
+    const frames = [];
+    let sampleRate = 0;
+    let frameIndex = 0;
+
+    let pos = 0;
+    while (pos + 7 <= payload.length) {
+        // Find ADTS sync: 0xFFF
+        if ((payload[pos] !== 0xFF) || ((payload[pos + 1] & 0xF0) !== 0xF0)) {
+            pos++;
+            continue;
+        }
+
+        // ADTS header
+        const hasCrc = !(payload[pos + 1] & 0x01); // protection_absent = 0 means CRC present
+        const srIdx = (payload[pos + 2] >> 2) & 0x0F;
+        const sr = ADTS_SAMPLE_RATES[srIdx] || 44100;
+        if (!sampleRate) sampleRate = sr;
+
+        // Frame length (13 bits)
+        const frameLen = ((payload[pos + 3] & 0x03) << 11) |
+                         (payload[pos + 4] << 3) |
+                         ((payload[pos + 5] >> 5) & 0x07);
+
+        if (frameLen < 7 || pos + frameLen > payload.length) break;
+
+        // Compute this frame's DTS: PES_DTS + (frameIndex * 1024 / sampleRate) * 90000
+        if (pesDts !== null) {
+            const frameDts = pesDts + (frameIndex * 1024 / sr) * 90000;
+            frames.push({ dts: frameDts, sr, pesBase: pesDts, frameIdx: frameIndex });
+        }
+
+        frameIndex++;
+        pos += frameLen;
+    }
+
+    return { frames, sampleRate };
+}
+
+// ── Chromium MergeBufferQueues simulation ──
+function mergeBufferQueues(audioFrames, videoFrames) {
+    const merged = [];
+    let ai = 0, vi = 0;
+    while (ai < audioFrames.length || vi < videoFrames.length) {
+        let pickAudio;
+        if (ai >= audioFrames.length) pickAudio = false;
+        else if (vi >= videoFrames.length) pickAudio = true;
+        else pickAudio = audioFrames[ai].dts <= videoFrames[vi].dts;
+
+        if (pickAudio) {
+            merged.push({ type: 'A', dts: audioFrames[ai].dts, idx: ai });
+            ai++;
+        } else {
+            merged.push({ type: 'V', dts: videoFrames[vi].dts, idx: vi });
+            vi++;
+        }
+    }
+
+    // Check monotonic
+    const violations = [];
+    for (let i = 1; i < merged.length; i++) {
+        if (merged[i].dts < merged[i - 1].dts) {
+            violations.push({
+                position: i,
+                cur: merged[i],
+                prev: merged[i - 1],
+                delta: merged[i].dts - merged[i - 1].dts
+            });
+        }
+    }
+    return { merged, violations };
+}
+
+// Check intra-track monotonic DTS
+function checkMonotonic(frames) {
+    const violations = [];
+    for (let i = 1; i < frames.length; i++) {
+        if (frames[i].dts < frames[i - 1].dts) {
+            violations.push({ position: i, cur: frames[i].dts, prev: frames[i - 1].dts, delta: frames[i].dts - frames[i - 1].dts });
+        }
+    }
+    return violations;
+}
+
+// ── Playlist Parser ──
+async function fetchPlaylist(url, proxy) {
+    const resp = await fetch(proxy ? proxy + encodeURIComponent(url) : url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const text = await resp.text();
+
+    // If master playlist, pick first variant
+    const lines = text.split('\n').map(l => l.trim());
+    const isMaster = lines.some(l => l.startsWith('#EXT-X-STREAM-INF'));
+    if (isMaster) {
+        let variantUrl = null;
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].startsWith('#EXT-X-STREAM-INF') && i + 1 < lines.length) {
+                variantUrl = lines[i + 1];
+                break;
+            }
+        }
+        if (!variantUrl) throw new Error('No variant found');
+        const absVariant = new URL(variantUrl, url).href;
+        log('Master playlist -> variant: ' + absVariant, 'log-dim');
+        return fetchPlaylist(absVariant, proxy);
+    }
+
+    // Media playlist: extract segment URIs and durations
+    const segments = [];
+    let duration = 0;
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('#EXTINF:')) {
+            duration = parseFloat(lines[i].split(':')[1]);
+        } else if (lines[i] && !lines[i].startsWith('#')) {
+            segments.push({ uri: new URL(lines[i], url).href, duration });
+        }
+    }
+    return segments;
+}
+
+// ── DTS Timeline Chart ──
+let dtsChartInstance = null;
+function renderDtsChart(audioPts, videoPts, violations) {
+    $('chart-card').style.display = 'block';
+    const canvas = $('dts-chart');
+    if (dtsChartInstance) dtsChartInstance.destroy();
+
+    const datasets = [
+        {
+            label: 'Audio DTS',
+            data: audioPts,
+            borderColor: '#22c55e',
+            backgroundColor: 'rgba(34,197,94,0.1)',
+            borderWidth: 1,
+            pointRadius: 0,
+            fill: false,
+            tension: 0
+        },
+        {
+            label: 'Video DTS',
+            data: videoPts,
+            borderColor: '#38bdf8',
+            backgroundColor: 'rgba(56,189,248,0.1)',
+            borderWidth: 1,
+            pointRadius: 0,
+            fill: false,
+            tension: 0
+        }
+    ];
+
+    if (violations.length > 0) {
+        datasets.push({
+            label: 'DTS Violation',
+            data: violations,
+            borderColor: '#ef4444',
+            backgroundColor: '#ef4444',
+            borderWidth: 0,
+            pointRadius: 6,
+            pointStyle: 'crossRot',
+            showLine: false
+        });
+    }
+
+    dtsChartInstance = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: { datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            scales: {
+                x: {
+                    type: 'linear',
+                    title: { display: true, text: 'Frame Index (global)', color: '#94a3b8', font: { size: 11 } },
+                    grid: { color: 'rgba(255,255,255,0.05)' },
+                    ticks: { color: '#94a3b8' }
+                },
+                y: {
+                    title: { display: true, text: 'DTS (seconds)', color: '#94a3b8', font: { size: 11 } },
+                    grid: { color: 'rgba(255,255,255,0.05)' },
+                    ticks: { color: '#94a3b8' }
+                }
+            },
+            plugins: {
+                legend: {
+                    labels: { color: '#f1f5f9', boxWidth: 14, font: { size: 11 } }
+                },
+                tooltip: {
+                    mode: 'nearest',
+                    intersect: false,
+                    callbacks: {
+                        label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(6)}s (frame #${ctx.parsed.x})`
+                    }
+                }
+            }
+        }
+    });
+}
+
+// ── Main Analysis ──
+async function run() {
+    const url = $('url').value.trim();
+    if (!url) return;
+    const startIdx = parseInt($('start').value) || 0;
+    const maxCount = parseInt($('count').value) || 10;
+    const proxy = $('proxy').value.trim();
+
+    $('btn').disabled = true;
+    $('log').innerHTML = '';
+    $('pw').style.display = 'block';
+    $('dash').style.display = 'grid';
+    progress(0);
+
+    let totalAac = 0, totalVf = 0, intraFails = 0, mergeFails = 0, interFails = 0;
+    let lastAudioDts = null, lastVideoDts = null;
+    const segResults = [];
+    // For global chart: collect all frame DTS across all segments
+    const allAudioDts = [];  // { x: frameGlobalIdx, y: dts_seconds }
+    const allVideoDts = [];
+    const mergeViolationPoints = []; // violation markers
+    let globalAudioIdx = 0, globalVideoIdx = 0;
+
+    try {
+        log('플레이리스트 로드 중...', 'log-dim');
+        const segments = await fetchPlaylist(url, proxy);
+        const end = Math.min(startIdx + maxCount, segments.length);
+        log(`총 ${segments.length}개 중 #${startIdx}~#${end - 1} 분석 (${end - startIdx}개)`, 'log-h');
+
+        for (let i = startIdx; i < end; i++) {
+            const seg = segments[i];
+            const label = `Seg #${i}`;
+
+            try {
+                const fetchUrl = proxy ? proxy + encodeURIComponent(seg.uri) : seg.uri;
+                const resp = await fetch(fetchUrl);
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const buf = await resp.arrayBuffer();
+                const data = parseTsSegment(new Uint8Array(buf));
+
+                const aCount = data.audioFrames.length;
+                const vCount = data.videoFrames.length;
+                totalAac += aCount;
+                totalVf += vCount;
+
+                // 1. Intra-segment audio DTS monotonic
+                const audioMono = checkMonotonic(data.audioFrames);
+                // 2. Intra-segment video DTS monotonic
+                const videoMono = checkMonotonic(data.videoFrames);
+                // 3. MergeBufferQueues simulation
+                const merge = mergeBufferQueues(data.audioFrames, data.videoFrames);
+
+                const intraIssues = audioMono.length + videoMono.length;
+                const mergeIssues = merge.violations.length;
+                intraFails += intraIssues;
+                mergeFails += mergeIssues;
+
+                // 4. Inter-segment continuity
+                let interIssue = null;
+                if (lastAudioDts !== null && data.audioFrames.length > 0) {
+                    const firstA = data.audioFrames[0].dts;
+                    if (firstA < lastAudioDts - 90) { // 1ms tolerance in 90kHz
+                        interIssue = { type: 'audio', prev: lastAudioDts, cur: firstA };
+                        interFails++;
+                    }
+                }
+                if (lastVideoDts !== null && data.videoFrames.length > 0) {
+                    const firstV = data.videoFrames[0].dts;
+                    if (firstV < lastVideoDts - 90) {
+                        interIssue = interIssue || {};
+                        interIssue.videoIssue = { prev: lastVideoDts, cur: firstV };
+                        if (!interIssue.type) { interIssue.type = 'video'; interFails++; }
+                    }
+                }
+
+                if (data.audioFrames.length > 0) lastAudioDts = data.audioFrames[data.audioFrames.length - 1].dts;
+                if (data.videoFrames.length > 0) lastVideoDts = data.videoFrames[data.videoFrames.length - 1].dts;
+
+                // Collect for global chart (downsample if too many: keep every Nth)
+                const aStep = aCount > 200 ? Math.floor(aCount / 100) : 1;
+                for (let fi = 0; fi < data.audioFrames.length; fi += aStep) {
+                    allAudioDts.push({ x: globalAudioIdx + fi, y: data.audioFrames[fi].dts / 90000 });
+                }
+                globalAudioIdx += aCount;
+                const vStep = vCount > 200 ? Math.floor(vCount / 50) : 1;
+                for (let fi = 0; fi < data.videoFrames.length; fi += vStep) {
+                    allVideoDts.push({ x: globalVideoIdx + fi, y: data.videoFrames[fi].dts / 90000 });
+                }
+                globalVideoIdx += vCount;
+                // Mark merge violations
+                for (const v of merge.violations) {
+                    mergeViolationPoints.push({ x: allAudioDts.length + allVideoDts.length, y: v.cur.dts / 90000 });
+                }
+
+                const ok = intraIssues === 0 && mergeIssues === 0 && !interIssue;
+                const segResult = {
+                    index: i, aCount, vCount, sampleRate: data.sampleRate,
+                    audioMono, videoMono, merge, interIssue, ok,
+                    aFirstDts: data.audioFrames[0]?.dts, aLastDts: data.audioFrames[data.audioFrames.length - 1]?.dts,
+                    vFirstDts: data.videoFrames[0]?.dts, vLastDts: data.videoFrames[data.videoFrames.length - 1]?.dts,
+                };
+                segResults.push(segResult);
+
+                // Log summary per segment
+                const statusIcon = ok ? '<span style="color:var(--success)">PASS</span>' : '<span style="color:var(--error)">FAIL</span>';
+                log(`${label}: ${statusIcon} | AAC: ${aCount} frames, Video: ${vCount} frames | SR: ${data.sampleRate}Hz`, ok ? 'log-ok' : 'log-err');
+
+                if (audioMono.length > 0) {
+                    log(`  Audio DTS 역행 ${audioMono.length}건 (세그먼트 내)`, 'log-err');
+                    for (const v of audioMono.slice(0, 3)) {
+                        log(`    frame[${v.position}]: ${(v.prev / 90000).toFixed(6)}s -> ${(v.cur / 90000).toFixed(6)}s (delta: ${(v.delta / 90).toFixed(3)}ms)`, 'log-warn');
+                    }
+                    if (audioMono.length > 3) log(`    ... 외 ${audioMono.length - 3}건`, 'log-dim');
+                }
+                if (videoMono.length > 0) {
+                    log(`  Video DTS 역행 ${videoMono.length}건 (세그먼트 내)`, 'log-err');
+                }
+                if (mergeIssues > 0) {
+                    log(`  A/V 병합 DTS 역행 ${mergeIssues}건 (Chromium MergeBufferQueues FAIL)`, 'log-err');
+                    for (const v of merge.violations.slice(0, 3)) {
+                        const prevLabel = v.prev.type === 'A' ? 'Audio' : 'Video';
+                        const curLabel = v.cur.type === 'A' ? 'Audio' : 'Video';
+                        log(`    [${prevLabel}] ${(v.prev.dts / 90000).toFixed(6)}s -> [${curLabel}] ${(v.cur.dts / 90000).toFixed(6)}s (delta: ${(v.delta / 90).toFixed(3)}ms)`, 'log-warn');
+                    }
+                    if (mergeIssues > 3) log(`    ... 외 ${mergeIssues - 3}건`, 'log-dim');
+                }
+                if (interIssue) {
+                    log(`  세그먼트 간 DTS 역행: ${interIssue.type} (${(interIssue.prev / 90000).toFixed(6)}s -> ${(interIssue.cur / 90000).toFixed(6)}s)`, 'log-err');
+                }
+
+            } catch (e) {
+                log(`${label}: ERROR - ${e.message}`, 'log-err');
+                segResults.push({ index: i, error: e.message, ok: false });
+            }
+
+            progress(Math.round(((i - startIdx + 1) / (end - startIdx)) * 100));
+        }
+
+        // ── Summary ──
+        $('s-segs').textContent = segResults.length;
+        $('s-aac').textContent = totalAac;
+        $('s-vf').textContent = totalVf;
+
+        $('s-intra').textContent = intraFails;
+        $('s-intra').style.color = intraFails > 0 ? 'var(--error)' : 'var(--success)';
+
+        $('s-merge').textContent = mergeFails;
+        $('s-merge').style.color = mergeFails > 0 ? 'var(--error)' : 'var(--success)';
+
+        $('s-inter').textContent = interFails;
+        $('s-inter').style.color = interFails > 0 ? 'var(--error)' : 'var(--success)';
+
+        const totalFails = intraFails + mergeFails + interFails;
+        const verdict = totalFails > 0 ? 'FAIL' : 'PASS';
+        $('s-verdict').textContent = verdict;
+        $('s-verdict').style.color = totalFails > 0 ? 'var(--error)' : 'var(--success)';
+
+        // Verdict report
+        log('', '');
+        log('Chromium 재생 판정 보고서', 'log-h');
+        if (totalFails === 0) {
+            log('PASS: 모든 세그먼트의 AAC 프레임 레벨 DTS가 단조 증가합니다. Chromium MergeBufferQueues 검증 통과.', 'log-ok');
+            log('web_media_player_impl.cc:2068 에러가 발생하지 않을 것으로 판정됩니다.', 'log-ok');
+        } else {
+            log(`FAIL: DTS 시퀀스 위반 총 ${totalFails}건 감지`, 'log-err');
+            if (mergeFails > 0) {
+                log(`MergeBufferQueues 실패 ${mergeFails}건 — Chromium이 "Parsed buffers not in DTS sequence" 에러를 발생시킵니다.`, 'log-err');
+                log('에러 체인: MergeBufferQueues() → FrameProcessor::ProcessFrames() → DEMUXER_ERROR_COULD_NOT_OPEN → web_media_player_impl.cc:2068', 'log-warn');
+            }
+            if (intraFails > 0) {
+                log(`세그먼트 내 DTS 역행 ${intraFails}건 — 오디오/비디오 트랙 자체의 DTS 순서가 깨져 있습니다.`, 'log-err');
+            }
+            if (interFails > 0) {
+                log(`세그먼트 간 DTS 역행 ${interFails}건 — 이전 세그먼트 끝보다 다음 세그먼트 시작 DTS가 작습니다.`, 'log-err');
+            }
+            log('해결: FFmpeg 인코딩 시 -af aresample=async=1 옵션을 적용하여 오디오 DTS 연속성을 보장하세요.', 'log-warn');
+        }
+
+        // ── Global DTS Timeline Chart ──
+        renderDtsChart(allAudioDts, allVideoDts, mergeViolationPoints);
+
+        // Segment detail table
+        log('', '');
+        log('세그먼트별 상세', 'log-h');
+        let tableHtml = '<table class="seg-table"><thead><tr>';
+        tableHtml += '<th>#</th><th>AAC</th><th>Video</th><th>SR</th><th>Audio DTS Range</th><th>Video DTS Range</th><th>Intra</th><th>Merge</th><th>Inter</th><th>판정</th>';
+        tableHtml += '</tr></thead><tbody>';
+
+        for (const r of segResults) {
+            if (r.error) {
+                tableHtml += `<tr class="fail"><td>${r.index}</td><td colspan="9" style="color:var(--error)">ERROR: ${r.error}</td></tr>`;
+                continue;
+            }
+            const rowCls = r.ok ? '' : ' class="fail"';
+            const aRange = r.aFirstDts != null ? `${(r.aFirstDts / 90000).toFixed(3)}s ~ ${(r.aLastDts / 90000).toFixed(3)}s` : '-';
+            const vRange = r.vFirstDts != null ? `${(r.vFirstDts / 90000).toFixed(3)}s ~ ${(r.vLastDts / 90000).toFixed(3)}s` : '-';
+            const intraBadge = (r.audioMono.length + r.videoMono.length) > 0
+                ? `<span class="badge b-fail">${r.audioMono.length + r.videoMono.length}</span>` : '<span class="badge b-ok">OK</span>';
+            const mergeBadge = r.merge.violations.length > 0
+                ? `<span class="badge b-fail">${r.merge.violations.length}</span>` : '<span class="badge b-ok">OK</span>';
+            const interBadge = r.interIssue
+                ? '<span class="badge b-fail">FAIL</span>' : '<span class="badge b-ok">OK</span>';
+            const verdict = r.ok ? '<span class="badge b-ok">PASS</span>' : '<span class="badge b-fail">FAIL</span>';
+
+            tableHtml += `<tr${rowCls}><td>${r.index}</td><td>${r.aCount}</td><td>${r.vCount}</td><td>${r.sampleRate}</td><td>${aRange}</td><td>${vRange}</td><td>${intraBadge}</td><td>${mergeBadge}</td><td>${interBadge}</td><td>${verdict}</td></tr>`;
+        }
+        tableHtml += '</tbody></table>';
+        log(tableHtml, '');
+
+    } catch (e) {
+        log('치명적 오류: ' + e.message, 'log-err');
+        console.error(e);
+    } finally {
+        $('btn').disabled = false;
+    }
+}
+</script>
+
+</body>
+</html>
