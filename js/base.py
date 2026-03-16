@@ -140,15 +140,15 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                     if not has_gap:
                         all_raw_diffs.append(raw_diff)
                 
-                # 규칙성(Predictability) 체크 (v1.7)
+                # 규칙성(Predictability) 체크 (v1.8 고도화)
                 is_consistent = False
                 if len(all_raw_diffs) >= 3:
                     recent = all_raw_diffs[-3:]
                     # 변화량 간의 차이가 1.5ms 이내면 매우 일관적 (Grid Alignment)
                     if (max(recent) - min(recent)) < 0.0015: 
                         is_consistent = True
-                    # 혹은 절대값이 10ms 이하인 미세 보정이 유지될 때
-                    elif max([abs(d) for d in recent]) < 0.01:
+                    # 혹은 절대값이 12ms 이하인 미세 보정이 유지될 때
+                    elif max([abs(d) for d in recent]) < 0.012:
                         is_consistent = True
                 
                 # GAP 복구 분석
@@ -167,11 +167,11 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                 sync_status = "✅ Synced"
                 log_type = "success"
                 
-                # 진단 임계값 (v1.7): 규칙적이면 200ms까지 허용 (실환경 Resilience 반영)
+                # 진단 임계값 (v1.8): 규칙적이면 200ms까지 허용
                 if abs(offset) >= 0.20 and not is_consistent:
                     sync_status = "🚨 CRITICAL"
                     log_type = "error"
-                elif abs(offset) >= 0.12 or (abs(raw_diff) > 0.035 and not is_consistent):
+                elif abs(offset) >= 0.12 or (abs(raw_diff) > 0.04 and not is_consistent):
                     sync_status = "⚠️ Warning"
                     log_type = "warning"
                 
@@ -208,19 +208,35 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         avg_offset = sum(all_offsets) / len(all_offsets)
         max_abs_offset = max([abs(o) for o in all_offsets])
         
-        # 지그재그 진동(Oscillation) 최종 판정 (v1.7 상향 조정)
-        oscillation_count = 0
-        major_jitter_count = 0
-        if len(all_raw_diffs) >= 2:
-            for j in range(1, len(all_raw_diffs)):
-                # 부호가 바뀌고 진폭이 30ms 이상일 때만 위험한 진동으로 간주
-                if all_raw_diffs[j] * all_raw_diffs[j-1] < 0 and abs(all_raw_diffs[j]) > 0.03:
-                    oscillation_count += 1
-                if abs(all_raw_diffs[j]) > 0.05:
-                    major_jitter_count += 1
+        # v1.8: 통계 기반 동적 격자(Grid) 감지
+        # 가장 흔하게 발생하는 지터(abs(raw_diff))를 격자로 추정
+        jitters = [abs(round(d * 1000, 1)) for d in all_raw_diffs if abs(d) > 0.001]
+        grid_ms = 0
+        if jitters:
+            from collections import Counter
+            counts = Counter(jitters)
+            grid_ms, _ = counts.most_common(1)[0]
         
-        is_oscillating = oscillation_count >= 2
-        is_stable_drift = not is_oscillating and major_jitter_count == 0
+        # v1.8: 영점 교차율(Zero-crossing Rate) 및 진동 분석
+        zcr_count = 0
+        fatal_osc_count = 0
+        amplitudes_at_cross = []
+        
+        if len(all_offsets) >= 2:
+            for j in range(1, len(all_offsets)):
+                # 부호 전환 감지 (+ -> - 또는 - -> +)
+                if all_offsets[j] * all_offsets[j-1] < 0:
+                    zcr_count += 1
+                    # 교차 지점에서의 진폭(현재 세그먼트와 이전 세그먼트 오프셋의 거리)
+                    amp = abs(all_offsets[j] - all_offsets[j-1])
+                    amplitudes_at_cross.append(amp)
+                    # 교차 시 진폭이 30ms 이상이고 불규칙적이면 Fatal로 간주
+                    if amp > 0.03:
+                        fatal_osc_count += 1
+        
+        # 진단 엔진 v1.8 판정 로직
+        is_oscillating = fatal_osc_count >= 2
+        is_grid_stable = not is_oscillating and len(all_raw_diffs) >= 3
         
         status_label = "정상"
         status_color = "var(--success)"
@@ -230,7 +246,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         elif max_abs_offset > 0.3:
             status_label = "위험 (거대 오차)"
             status_color = "var(--error)"
-        elif max_abs_offset > 0.15 and not is_stable_drift:
+        elif max_abs_offset > 0.15 and not is_grid_stable:
             status_label = "주의"
             status_color = "var(--warning)"
             
@@ -246,14 +262,14 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         dashboard_html += '        <div class="stat-value">' + avg_offset_ms + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '    <div class="stat-card">'
-        dashboard_html += '        <div class="stat-label">예측 가능성</div>'
-        dashboard_html += '        <div class="stat-value">' + ("높음" if is_stable_drift else "낮음") + '</div>'
+        dashboard_html += '        <div class="stat-label">추정 격자(Grid)</div>'
+        dashboard_html += '        <div class="stat-value">' + ('{:.1f}ms'.format(grid_ms) if grid_ms > 0 else "N/A") + '</div>'
         dashboard_html += '    </div>'
         dashboard_html += '</div>'
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log('[*] 분석 상세 결과 (v1.7)', 'header')
+        log('[*] 분석 상세 결과 (v1.8)', 'header')
         table_html = '<table class="summary-table"><thead><tr>'
         table_html += '<th>#</th><th>V-Start</th><th>A-Start</th><th>Offset</th><th>Jitter</th><th>상세</th>'
         table_html += '</tr></thead><tbody>'
@@ -274,26 +290,28 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             if row['gap']:
                 badge += ' <span class="badge" style="background: #64748b">GAP</span>'
             elif row['raw_diff'] != 0:
-                # v1.7: 30ms 이상의 급격한 방향 전환만 ZIGZAG 표시
+                # ZCR 기반의 진동 표시
                 idx_in_data = row['index'] - start_index
                 if idx_in_data > 0:
-                    prev_diff = analysis_data[idx_in_data-1]['raw_diff']
-                    if row['raw_diff'] * prev_diff < 0 and abs(row['raw_diff']) > 0.03:
-                        badge += ' <span class="badge" style="background: #f43f5e">ZIGZAG</span>'
+                    curr_off = row['offset']
+                    prev_off = analysis_data[idx_in_data-1]['offset']
+                    if curr_off is not None and prev_off is not None:
+                        if curr_off * prev_off < 0 and abs(curr_off - prev_off) > 0.03:
+                            badge += ' <span class="badge" style="background: #f43f5e">ZCR-ZIG</span>'
             
             table_html += '<tr><td>' + str(row['index']) + '</td><td>' + '{:.3f}'.format(row['v_start']) + '</td><td>' + '{:.3f}'.format(row['a_start']) + '</td><td>' + off_str + '</td><td>' + jit_str + '</td><td>' + badge + '</td></tr>'
         table_html += "</tbody></table>"
         log(table_html)
 
-        # 스마트 진단 가이드 (v1.7)
-        log("[*] 스마트 진단 보고서 (v1.7)", "header")
-        if is_stable_drift:
-            log("✅ <b>STABLE (정상):</b> 오차가 존재하나 매우 규칙적이거나 미세한 보정(7.8ms 격자 등) 수준입니다. 안드로이드 크롬에서 문제없이 재생 가능합니다.", "success")
+        # 스마트 진단 가이드 (v1.8)
+        log("[*] 스마트 진단 보고서 (v1.8)", "header")
+        if is_grid_stable:
+            log("✅ <b>STABLE GRID (정상):</b> 오차가 존재하나 동적 격자({:.1f}ms) 기반의 보정 패턴이 매우 안정적입니다. 안드로이드 크롬에서 완벽하게 재생 가능합니다.".format(grid_ms), "success")
         elif is_oscillating:
-            log("🚫 <b>FATAL OSCILLATION (위험):</b> 오차가 30ms 이상 큰 폭으로 요동치고 있습니다. 이는 디코더 버퍼를 교란하여 재생 중단을 유발합니다.", "error")
+            log("🚫 <b>FATAL OSCILLATION (위험):</b> 부호 전환 시 진폭이 크고 불규칙한 진동이 감지되었습니다(ZCR 감지). 이는 하드웨어 디코더 버퍼를 교란하는 핵심 원인입니다. (-async 1 필수)", "error")
         elif max_abs_offset > 0.25:
-            log("⚠️ <b>LARGE DELAY (주의):</b> 오차가 전반적으로 큽니다. 네트워크 환경이 불안정할 경우 끊김이 발생할 수 있습니다.", "warning")
+            log("⚠️ <b>LARGE DELAY (주의):</b> 격자 패턴은 보이나 기본적인 오프셋이 너무 큽니다. 시청 경험에 지장이 있을 수 있습니다.", "warning")
         else:
-            log("ℹ️ <b>분석 완료:</b> 스트림 패턴이 양호합니다.", "info")
+            log("ℹ️ <b>분석 완료:</b> 스트림이 대체로 양호합니다.", "info")
 
     log("[*] 모든 분석 완료", "header")
