@@ -98,7 +98,7 @@ async def start_analysis(event):
     try:
         await check_hls_continuity(url, start_seg, max_segs, proxy_prefix)
     except Exception as e:
-        log(f"분석 중 치명적 오류: {str(e)}", "error")
+        log('분석 중 치명적 오류: ' + str(e), 'error')
     finally:
         reset_ui()
 
@@ -123,12 +123,12 @@ async def fetch_with_proxy(url, prefix):
     try:
         res = await pyfetch(final_url)
         if res.ok: return res
-        raise Exception(f"HTTP {res.status}")
+        raise Exception('HTTP ' + str(res.status))
     except Exception as e:
-        raise Exception(f"네트워크/CORS 오류: {final_url[:60]}... ({e})")
+        raise Exception('네트워크/CORS 오류: ' + str(final_url[:60]) + '... (' + str(e) + ')')
 
 async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix):
-    log(f"[*] 분석 시작: {m3u8_url}", "header")
+    log('[*] 분석 시작: ' + m3u8_url, 'header')
     
     try:
         resp = await fetch_with_proxy(m3u8_url, proxy_prefix)
@@ -159,7 +159,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         log(f"시작 인덱스({start_index})가 전체 세그먼트 수({total_available})보다 큽니다.", "error")
         return
 
-    log(f"[*] 총 {total_available}개 중 {start_index}번부터 {count}개 분석 ({start_index}~{end_index-1})", "info")
+    log('[*] 총 ' + str(total_available) + '개 중 ' + str(start_index) + '번부터 ' + str(count) + '개 분석 (' + str(start_index) + '~' + str(end_index-1) + ')', 'info')
     
     # 암호화 확인
     if any(seg.key for seg in segments):
@@ -172,9 +172,9 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
     
     for i in range(count):
         actual_idx = start_index + i
-        document.getElementById("status-text").innerText = f"분석 중 ({i+1}/{count})"
+        document.getElementById("status-text").innerText = '분석 중 (' + str(i+1) + '/' + str(count) + ')'
         seg = target_segments[i]
-        log(f"Seg {actual_idx}: {seg.uri}", "header")
+        log('Seg ' + str(actual_idx) + ': ' + seg.uri, 'header')
         
         try:
             r = await fetch_with_proxy(seg.absolute_uri, proxy_prefix)
@@ -188,9 +188,9 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             a_start = a.firstPts if a.firstPts is not None else a.firstDts
             
             if v_start is not None:
-                log(f"  Video PTS: {v.firstPts:.3f} | DTS: {v.firstDts:.3f}", "info")
+                log('  Video PTS: ' + '{:.3f}'.format(v.firstPts) + ' | DTS: ' + '{:.3f}'.format(v.firstDts), 'info')
             if a_start is not None:
-                log(f"  Audio PTS: {a.firstPts:.3f} | DTS: {a.firstDts:.3f}", "info")
+                log('  Audio PTS: ' + '{:.3f}'.format(a.firstPts) + ' | DTS: ' + '{:.3f}'.format(a.firstDts), 'info')
             
             # A/V Offset 및 Drift 계산
             if v_start is not None and a_start is not None:
@@ -218,12 +218,12 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
                     sync_status = "⚠️ Warning (Mobile Skew)"
                     log_type = "warning"
                 
-                log(f"  🔗 A/V Offset: {offset:.4f}s ({offset_ms:.1f}ms) [{sync_status}]", log_type)
+                log('  🔗 A/V Offset: ' + '{:.4f}'.format(offset) + 's (' + '{:.1f}'.format(offset_ms) + 'ms) [' + sync_status + ']', log_type)
                 
                 if not has_gap and drift > 0.05:
-                    log(f"    📉 High Drift detected: {drift*1000:.1f}ms change from prev segment", "error")
+                    log('    📉 High Drift detected: ' + '{:.1f}'.format(drift*1000) + 'ms change from prev segment', 'error')
                 elif has_gap:
-                    log(f"    ℹ️ Continuity Gap detected. Skipping drift analysis for this segment.", "info")
+                    log('    ℹ️ Continuity Gap detected. Skipping drift analysis for this segment.', 'info')
                 
                 if abs(offset) < 0.001:
                     log("    💡 FFMPEG -async 1 적용 가능성 높음 (Start aligned)", "info")
@@ -232,19 +232,19 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             if v_start is not None and last_v_dts_end is not None:
                 v_diff = v_start - last_v_dts_end
                 if abs(v_diff) > 0.1:
-                    log(f"  🎬 Video Gap/Overlap: {v_diff:.3f}s", "error")
+                    log('  🎬 Video Gap/Overlap: ' + '{:.3f}'.format(v_diff) + 's', 'error')
                 else:
-                    log(f"  🎬 Video Continuity: OK ({v_diff:.3f}s)", "success")
+                    log('  🎬 Video Continuity: OK (' + '{:.3f}'.format(v_diff) + 's)', 'success')
 
             # 연속성 체크 (Audio 기준)
             if a_start is not None and last_a_dts_end is not None:
                 a_diff = a_start - last_a_dts_end
                 if abs(a_diff) > 0.1:
-                    log(f"  🎵 Audio Gap/Overlap: {a_diff:.3f}s", "error")
+                    log('  🎵 Audio Gap/Overlap: ' + '{:.3f}'.format(a_diff) + 's', 'error')
                 
             # 그래프용 캔버스 생성 및 렌더링
-            canvas_id = f"chart-seg-{actual_idx}"
-            log(f'<div class="chart-wrapper"><canvas id="{canvas_id}"></canvas></div>')
+            canvas_id = 'chart-seg-' + str(actual_idx)
+            log('<div class="chart-wrapper"><canvas id="' + canvas_id + '"></canvas></div>')
             window.renderSegmentChart(canvas_id, v.samples, a.samples)
 
             # 테이블용 데이터 저장
@@ -282,7 +282,7 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
             status_label = "주의 (싱크 불안정)"
             status_color = "var(--warning)"
             
-        avg_offset_ms = f"{avg_offset*1000:.1f}ms"
+        avg_offset_ms = '{:.1f}'.format(avg_offset*1000) + 'ms'
         ffmpeg_badge = "✅ 적용됨" if is_ffmpeg_async else "❌ 미감지"
 
         # f-string 대신 문자열 더하기(+) 사용 (IDE 린트 오류 및 파싱 이슈 완전 방지)
@@ -303,33 +303,31 @@ async def check_hls_continuity(m3u8_url, start_index, max_segments, proxy_prefix
         
         document.getElementById("summary-dashboard").innerHTML = dashboard_html
         
-        log(f"[*] 분석 완료 요약", "header")
+        log('[*] 분석 완료 요약', 'header')
         
-        # 상세 데이터 테이블 생성
-        table_html = """
-        <table class="summary-table">
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Video Start (s)</th>
-                    <th>Audio Start (s)</th>
-                    <th>A/V Offset (ms)</th>
-                    <th>상태</th>
-                </tr>
-            </thead>
-            <tbody>
-        """
+        # 상세 데이터 테이블 생성 (트리플 쿼트 대신 안전한 문자열 연결 사용)
+        table_html = '<table class="summary-table">'
+        table_html += '    <thead>'
+        table_html += '        <tr>'
+        table_html += '            <th>#</th>'
+        table_html += '            <th>Video Start (s)</th>'
+        table_html += '            <th>Audio Start (s)</th>'
+        table_html += '            <th>A/V Offset (ms)</th>'
+        table_html += '            <th>상태</th>'
+        table_html += '        </tr>'
+        table_html += '    </thead>'
+        table_html += '    <tbody>'
         for row in analysis_data:
             idx = row['index']
-            v_s = f"{row['v_start']:.3f}" if row['v_start'] is not None else "-"
-            a_s = f"{row['a_start']:.3f}" if row['a_start'] is not None else "-"
+            v_s = '{:.3f}'.format(row['v_start']) if row['v_start'] is not None else "-"
+            a_s = '{:.3f}'.format(row['a_start']) if row['a_start'] is not None else "-"
             off_val = row['offset']
             off_str = "-"
             badge = ""
             
             if off_val is not None:
                 off_ms = off_val * 1000
-                off_str = f"{off_ms:.1f}ms"
+                off_str = '{:.1f}'.format(off_ms) + 'ms'
                 if abs(off_val) < 0.01: badge = '<span class="badge badge-success">Synced</span>'
                 elif abs(off_val) < 0.06: badge = '<span class="badge badge-warning">Small Skew</span>'
                 else: badge = '<span class="badge badge-error">Critical</span>'
