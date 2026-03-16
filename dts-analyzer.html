@@ -72,7 +72,7 @@
 
 <div class="container">
     <header>
-        <h1>Chromium DTS Sequence Analyzer v1.2</h1>
+        <h1>Chromium DTS Sequence Analyzer v1.3</h1>
         <p class="subtitle">AAC 프레임 레벨 DTS 파싱 — web_media_player_impl.cc:2068 에러 사전 검증</p>
     </header>
 
@@ -279,9 +279,9 @@ function parseTsSegment(uint8) {
         }
     }
 
-    // Sort by DTS within each track
-    result.audioFrames.sort((a, b) => a.dts - b.dts);
-    result.videoFrames.sort((a, b) => a.dts - b.dts);
+    // DO NOT sort frames — Chromium processes them in PES arrival order.
+    // Sorting would mask DTS reversals caused by out-of-order PES packets,
+    // which is exactly what triggers "Parsed buffers not in DTS sequence".
 
     return result;
 }
